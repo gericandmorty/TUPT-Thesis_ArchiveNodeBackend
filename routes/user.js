@@ -1,25 +1,26 @@
 const express = require('express');
 const User = require('../models/User');
 const router = express.Router();
+const auth = require('../middleware/auth');
 
 
-router.get('/profile', async (req, res) => {
+router.get('/profile', auth, async (req, res) => {
     try {
- 
+
         const { userId } = req.query;
 
         if (!userId) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                message: 'User ID is required' 
+                message: 'User ID is required'
             });
         }
 
         const user = await User.findById(userId);
         if (!user) {
-            return res.status(404).json({ 
+            return res.status(404).json({
                 success: false,
-                message: 'User not found' 
+                message: 'User not found'
             });
         }
 
@@ -32,31 +33,31 @@ router.get('/profile', async (req, res) => {
 
     } catch (error) {
         console.error('Get profile error:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
             message: 'Error fetching user profile',
-            error: error.message 
+            error: error.message
         });
     }
 });
 
 
-router.put('/profile', async (req, res) => {
+router.put('/profile', auth, async (req, res) => {
     try {
         const { userId, name, birthdate, currentPassword, newPassword } = req.body;
 
         if (!userId) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                message: 'User ID is required' 
+                message: 'User ID is required'
             });
         }
 
         const user = await User.findById(userId);
         if (!user) {
-            return res.status(404).json({ 
+            return res.status(404).json({
                 success: false,
-                message: 'User not found' 
+                message: 'User not found'
             });
         }
 
@@ -69,9 +70,9 @@ router.put('/profile', async (req, res) => {
         if (birthdate) {
             const newBirthdate = new Date(birthdate);
             if (newBirthdate > new Date()) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
-                    message: 'Birthdate cannot be in the future' 
+                    message: 'Birthdate cannot be in the future'
                 });
             }
             user.birthdate = newBirthdate;
@@ -80,26 +81,26 @@ router.put('/profile', async (req, res) => {
         // Update password if provided
         if (newPassword) {
             if (!currentPassword) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
-                    message: 'Current password is required to set new password' 
+                    message: 'Current password is required to set new password'
                 });
             }
 
             // Verify current password
             const isCurrentPasswordValid = await user.comparePassword(currentPassword);
             if (!isCurrentPasswordValid) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
-                    message: 'Current password is incorrect' 
+                    message: 'Current password is incorrect'
                 });
             }
 
             // Check if new password meets requirements
             if (newPassword.length < 6) {
-                return res.status(400).json({ 
+                return res.status(400).json({
                     success: false,
-                    message: 'New password must be at least 6 characters long' 
+                    message: 'New password must be at least 6 characters long'
                 });
             }
 
@@ -118,18 +119,18 @@ router.put('/profile', async (req, res) => {
 
     } catch (error) {
         console.error('Update profile error:', error);
-        
+
         if (error.code === 11000) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 success: false,
-                message: 'User with this ID number already exists' 
+                message: 'User with this ID number already exists'
             });
         }
 
-        res.status(500).json({ 
+        res.status(500).json({
             success: false,
             message: 'Error updating profile',
-            error: error.message 
+            error: error.message
         });
     }
 });

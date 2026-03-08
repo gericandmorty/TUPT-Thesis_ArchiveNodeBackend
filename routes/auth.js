@@ -1,6 +1,7 @@
 const express = require('express');
-const User = require('../models/User');
 const router = express.Router();
+const User = require('../models/User');
+const jwt = require('jsonwebtoken');
 
 // Register
 router.post('/register', async (req, res) => {
@@ -22,7 +23,20 @@ router.post('/register', async (req, res) => {
         });
 
         await user.save();
-        res.status(201).json({ message: 'User registered successfully', user });
+
+        // Create Token
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'fallback_secret');
+
+        res.status(201).json({
+            message: 'User registered successfully',
+            token,
+            user: {
+                _id: user._id,
+                name: user.name,
+                idNumber: user.idNumber,
+                birthdate: user.birthdate
+            }
+        });
 
     } catch (error) {
         res.status(500).json({ message: 'Error registering user', error: error.message });
@@ -46,10 +60,56 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ message: 'Invalid password' });
         }
 
-        res.json({ message: 'Login successful', user });
+        // Create Token
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'fallback_secret');
+
+        res.json({
+            message: 'Login successful',
+            token,
+            user: {
+                _id: user._id,
+                name: user.name,
+                idNumber: user.idNumber,
+                birthdate: user.birthdate
+            }
+        });
 
     } catch (error) {
         res.status(500).json({ message: 'Error logging in', error: error.message });
+    }
+});
+
+// Forgot Password (Reset using Birthdate)
+router.post('/forgot-password', async (req, res) => {
+    try {
+        const { idNumber, birthdate, newPassword } = req.body;
+
+        if (!idNumber || !birthdate || !newPassword) {
+            return res.status(400).json({ message: 'ID Number, birthdate, and new password are required' });
+        }
+
+        // Find user
+        const user = await User.findOne({ idNumber });
+        if (!user) {
+            return res.status(400).json({ message: 'User not found' });
+        }
+
+        // Verify birthdate (Compare date part only)
+        const storedDate = new Date(user.birthdate).toISOString().split('T')[0];
+        const providedDate = new Date(birthdate).toISOString().split('T')[0];
+
+        if (storedDate !== providedDate) {
+            return res.status(400).json({ message: 'Invalid birthdate verification' });
+        }
+
+        // Update password (pre-save hook will hash it)
+        user.password = newPassword;
+        await user.save();
+
+        res.json({ message: 'Password reset successful' });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error resetting password', error: error.message });
     }
 });
 

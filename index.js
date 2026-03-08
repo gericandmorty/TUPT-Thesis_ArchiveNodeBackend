@@ -4,7 +4,7 @@ const cors = require('cors'); // Import CORS
 const connectDB = require('./db/connection');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT;
 
 // Connect to DB
 connectDB();
@@ -16,6 +16,7 @@ app.use(express.json());
 // Routes
 app.use('/auth', require('./routes/auth'));
 app.use('/user', require('./routes/user'));
+app.use('/thesis', require('./routes/thesis'));
 
 // Start server
 app.listen(PORT, () => {
