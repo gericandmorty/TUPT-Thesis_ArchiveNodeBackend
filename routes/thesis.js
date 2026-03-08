@@ -10,6 +10,17 @@ router.get('/health', auth, (req, res) => {
     res.json({ status: 'ok', version: 'v19-final-check' });
 });
 
+// @route   GET /thesis/count
+// @desc    Get total number of thesis records
+router.get('/count', auth, async (req, res) => {
+    try {
+        const count = await Thesis.countDocuments();
+        res.json({ count });
+    } catch (err) {
+        res.status(500).json({ message: 'Error counting theses', error: err.message });
+    }
+});
+
 // @route   GET /thesis/years
 // @desc    Get all unique years for filtering
 router.get('/years', auth, async (req, res) => {
@@ -36,17 +47,61 @@ router.get('/categories', auth, async (req, res) => {
     }
 });
 
+// @route   GET /thesis/department-counts
+// @desc    Get counts grouped by department/category
+router.get('/department-counts', auth, async (req, res) => {
+    try {
+        const counts = await Thesis.aggregate([
+            {
+                $group: {
+                    _id: "$category",
+                    count: { $sum: 1 }
+                }
+            },
+            {
+                $sort: { count: -1 }
+            }
+        ]);
+
+        // Transform for easier frontend consumption
+        const formattedCounts = counts.map(c => ({
+            category: c._id || 'Uncategorized',
+            count: c.count
+        }));
+
+        res.json(formattedCounts);
+    } catch (err) {
+        console.error('Error aggregating department counts:', err);
+        res.status(500).json({ message: 'Error aggregating counts', error: err.message });
+    }
+});
+
 // --- DYNAMIC/SEARCH ROUTES SECOND ---
 
 // @route   GET /thesis/search
 // @desc    Search theses by title, author, or abstract using regex and text index
 router.get('/search', auth, async (req, res) => {
     try {
-        const { query, year, type, category } = req.query;
+        const { query, year, type, category, since, sort, startDate, endDate } = req.query;
         let filter = {};
 
         if (year && year !== 'all') {
             filter.year_range = year;
+        }
+
+        if (since) {
+            // Handle "Since [Year]" from sidebar
+            filter.year_range = { $gte: since };
+        }
+
+        if (startDate || endDate) {
+            filter.createdAt = {};
+            if (startDate) filter.createdAt.$gte = new Date(startDate);
+            if (endDate) {
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                filter.createdAt.$lte = end;
+            }
         }
 
         if (category && category !== 'all') {
@@ -68,9 +123,69 @@ router.get('/search', auth, async (req, res) => {
             }
         }
 
-        const results = await Thesis.find(filter)
-            .sort({ createdAt: -1 })
-            .limit(50);
+        let sortOption = { createdAt: -1 };
+        if (sort === 'date') {
+            sortOption = { createdAt: -1 }; // Already default, but explicit for clarity
+        } else if (sort === 'relevance' && query) {
+            // MongoDB text search relevance sorting is handled by score
+            // For now, we'll stick to createdAt unless we implement full text score sorting
+            sortOption = { createdAt: -1 };
+        }
+
+        // Build the aggregation pipeline
+        let pipeline = [];
+
+        // 1. Initial Match (Filter)
+        pipeline.push({ $match: filter });
+
+        // 2. Add Sort Year field (extract first 4 digits from year_range or use 0 for unknown)
+        pipeline.push({
+            $addFields: {
+                numericYear: {
+                    $cond: {
+                        if: { $regexMatch: { input: "$year_range", regex: /\d{4}/ } },
+                        then: {
+                            $convert: {
+                                input: { $indexOfBytes: ["$year_range", "2"] }, // Simple check for 20xx
+                                to: "int",
+                                onError: 0
+                            }
+                        },
+                        else: 0
+                    }
+                }
+            }
+        });
+
+        // Improved numeric extraction for "sortYear"
+        pipeline[1].$addFields.sortYear = {
+            $let: {
+                vars: {
+                    yearMatch: { $regexFind: { input: "$year_range", regex: /\d{4}/ } }
+                },
+                in: {
+                    $cond: [
+                        { $gt: ["$$yearMatch", null] },
+                        { $convert: { input: "$$yearMatch.match", to: "int", onError: 0 } },
+                        0
+                    ]
+                }
+            }
+        };
+
+        // 3. Sort logic: Valid years (desc) first, then unknown (0)
+        // We use a helper field to treat 0 as very small
+        pipeline.push({
+            $sort: {
+                sortYear: -1,
+                createdAt: -1
+            }
+        });
+
+        // 4. Limit results
+        pipeline.push({ $limit: 50 });
+
+        const results = await Thesis.aggregate(pipeline);
 
         res.json(results);
     } catch (error) {
