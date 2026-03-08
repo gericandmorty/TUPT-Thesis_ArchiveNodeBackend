@@ -19,7 +19,7 @@ const userSchema = new mongoose.Schema({
         type: Date,
         required: [true, 'Birthdate is required'],
         validate: {
-            validator: function(value) {
+            validator: function (value) {
                 // Check if birthdate is not in the future
                 return value <= new Date();
             },
@@ -30,16 +30,20 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: [true, 'Password is required'],
         minlength: [6, 'Password must be at least 6 characters long']
+    },
+    isAdmin: {
+        type: Boolean,
+        default: false
     }
 }, {
     timestamps: true // Adds createdAt and updatedAt automatically
 });
 
 // Hash password before saving
-userSchema.pre('save', async function(next) {
+userSchema.pre('save', async function (next) {
     // Only hash the password if it's modified (or new)
     if (!this.isModified('password')) return next();
-    
+
     try {
         // Generate salt
         const salt = await bcrypt.genSalt(12);
@@ -52,7 +56,7 @@ userSchema.pre('save', async function(next) {
 });
 
 // Compare password method
-userSchema.methods.comparePassword = async function(candidatePassword) {
+userSchema.methods.comparePassword = async function (candidatePassword) {
     try {
         return await bcrypt.compare(candidatePassword, this.password);
     } catch (error) {
@@ -61,25 +65,25 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 };
 
 // Virtual for age calculation
-userSchema.virtual('age').get(function() {
+userSchema.virtual('age').get(function () {
     if (!this.birthdate) return null;
-    
+
     const today = new Date();
     const birthDate = new Date(this.birthdate);
     let age = today.getFullYear() - birthDate.getFullYear();
-    
+
     const monthDiff = today.getMonth() - birthDate.getMonth();
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
         age--;
     }
-    
+
     return age;
 });
 
 // Transform output to include virtuals and remove password
 userSchema.set('toJSON', {
     virtuals: true,
-    transform: function(doc, ret) {
+    transform: function (doc, ret) {
         delete ret.password;
         delete ret.__v;
         return ret;

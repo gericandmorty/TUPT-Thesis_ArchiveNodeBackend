@@ -25,7 +25,7 @@ router.post('/register', async (req, res) => {
         await user.save();
 
         // Create Token
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'fallback_secret');
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
 
         res.status(201).json({
             message: 'User registered successfully',
@@ -34,7 +34,8 @@ router.post('/register', async (req, res) => {
                 _id: user._id,
                 name: user.name,
                 idNumber: user.idNumber,
-                birthdate: user.birthdate
+                birthdate: user.birthdate,
+                isAdmin: user.isAdmin
             }
         });
 
@@ -61,7 +62,7 @@ router.post('/login', async (req, res) => {
         }
 
         // Create Token
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'fallback_secret');
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
 
         res.json({
             message: 'Login successful',
@@ -70,12 +71,55 @@ router.post('/login', async (req, res) => {
                 _id: user._id,
                 name: user.name,
                 idNumber: user.idNumber,
-                birthdate: user.birthdate
+                birthdate: user.birthdate,
+                isAdmin: user.isAdmin
             }
         });
 
     } catch (error) {
         res.status(500).json({ message: 'Error logging in', error: error.message });
+    }
+});
+
+// Admin Login
+router.post('/admin/login', async (req, res) => {
+    try {
+        const { idNumber, password } = req.body;
+
+        // Find user
+        const user = await User.findOne({ idNumber });
+        if (!user) {
+            return res.status(400).json({ message: 'Admin not found' });
+        }
+
+        // Check password
+        const isMatch = await user.comparePassword(password);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Invalid credentials' });
+        }
+
+        // Check if Admin
+        if (!user.isAdmin) {
+            return res.status(403).json({ message: 'Access denied. Administrator privileges required.' });
+        }
+
+        // Create Token
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+
+        res.json({
+            message: 'Admin login successful',
+            token,
+            user: {
+                _id: user._id,
+                name: user.name,
+                idNumber: user.idNumber,
+                birthdate: user.birthdate,
+                isAdmin: user.isAdmin
+            }
+        });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error logging in as admin', error: error.message });
     }
 });
 
