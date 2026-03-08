@@ -1,7 +1,53 @@
 const express = require('express');
 const User = require('../models/User');
+const Thesis = require('../models/Thesis');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const multer = require('multer');
+const { analyzeDocument } = require('../modules/documentAnalyzer');
+
+// Multer configuration for file analysis (memory storage)
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+
+// @route   POST /user/theses
+// @desc    Submit a new thesis
+router.post('/theses', auth, async (req, res) => {
+    try {
+        const { title, abstract, author, year_range, category, id } = req.body;
+
+        const newThesis = new Thesis({
+            id: id || `USER-${Date.now()}`, // Fallback ID if not provided
+            title,
+            abstract,
+            author,
+            year_range,
+            category,
+            createdBy: req.user,
+            isApproved: false // Always false by default for user submissions
+        });
+
+        const thesis = await newThesis.save();
+        res.status(201).json({ success: true, data: thesis });
+    } catch (err) {
+        console.error('Submission error:', err);
+        res.status(500).json({ success: false, message: 'Error submitting thesis', error: err.message });
+    }
+});
+
+// @route   GET /user/theses
+// @desc    Get all theses created by the logged-in user
+router.get('/theses', auth, async (req, res) => {
+    try {
+        const theses = await Thesis.find({ createdBy: req.user }).sort({ createdAt: -1 });
+        res.json({ success: true, data: theses });
+    } catch (err) {
+        console.error('Fetch error:', err);
+        res.status(500).json({ success: false, message: 'Error fetching your theses', error: err.message });
+    }
+});
 
 
 router.get('/profile', auth, async (req, res) => {
@@ -131,6 +177,31 @@ router.put('/profile', auth, async (req, res) => {
             success: false,
             message: 'Error updating profile',
             error: error.message
+        });
+    }
+});
+
+// @route   POST /user/analyze
+// @desc    Analyze a research document
+router.post('/analyze', auth, upload.single('thesis'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded' });
+        }
+
+        const stats = await analyzeDocument(req.file.buffer, req.file.mimetype);
+
+        res.json({
+            success: true,
+            ...stats
+        });
+
+    } catch (err) {
+        console.error('Analysis error:', err);
+        res.status(500).json({
+            success: false,
+            message: 'Error analyzing document',
+            error: err.message
         });
     }
 });
