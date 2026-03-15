@@ -335,6 +335,32 @@ router.post('/profile-photo', auth, profileUpload.single('photo'), async (req, r
 
         const filePath = req.file.path; // Cloudinary returns the full URL in path
         
+        // Find existing user to check for old photo
+        const currentUser = await User.findById(req.user);
+        
+        if (currentUser && currentUser.profilePhoto && currentUser.profilePhoto.includes('cloudinary.com')) {
+            try {
+                // Extract public_id from URL
+                // Format: https://res.cloudinary.com/cloud_name/image/upload/v12345/folder/id.jpg
+                const urlParts = currentUser.profilePhoto.split('/');
+                const uploadIndex = urlParts.findIndex(part => part === 'upload');
+                
+                if (uploadIndex !== -1) {
+                    // Parts after version (v...) are the public_id
+                    const publicIdWithExt = urlParts.slice(uploadIndex + 2).join('/');
+                    const publicId = publicIdWithExt.split('.')[0];
+                    
+                    if (publicId) {
+                        await cloudinary.uploader.destroy(publicId);
+                        console.log('Deleted old profile photo:', publicId);
+                    }
+                }
+            } catch (deleteErr) {
+                // Log but don't fail the update if deletion fails
+                console.error('Failed to delete old photo from Cloudinary:', deleteErr);
+            }
+        }
+
         // Update user profile with photo path
         const user = await User.findByIdAndUpdate(
             req.user,
