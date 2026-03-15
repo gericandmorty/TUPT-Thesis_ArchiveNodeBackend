@@ -237,6 +237,18 @@ router.delete('/ai-history/:id', auth, async (req, res) => {
     }
 });
 
+// @route   DELETE /user/ai-history
+// @desc    Clear all AI prompt history for the user
+router.delete('/ai-history', auth, async (req, res) => {
+    try {
+        await AiHistory.deleteMany({ user: req.user });
+        res.json({ success: true, message: 'All history records deleted' });
+    } catch (err) {
+        console.error('Clear AI history error:', err);
+        res.status(500).json({ success: false, message: 'Error clearing AI history', error: err.message });
+    }
+});
+
 // @route   POST /user/ai-history
 // @desc    Save a new AI prompt/recommendation
 router.post('/ai-history', auth, async (req, res) => {
