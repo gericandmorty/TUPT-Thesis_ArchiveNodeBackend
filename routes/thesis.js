@@ -3,6 +3,7 @@ const router = express.Router();
 const Thesis = require('../models/Thesis');
 const auth = require('../middleware/auth');
 const { generateText } = require('../modules/ai');
+const { redis, getSearchCacheVersion } = require('../modules/cache');
 
 // --- STATIC ROUTES FIRST ---
 
@@ -87,6 +88,28 @@ router.get('/department-counts', auth, async (req, res) => {
 router.get('/search', auth, async (req, res) => {
     try {
         const { query, year, type, category, since, sort, startDate, endDate } = req.query;
+
+        // --- CACHE CHECK ---
+        let cacheKey = null;
+        if (redis) {
+            const searchVersion = await getSearchCacheVersion();
+            // Create a unique key for this exact search query, bound to the current version namespace
+            const queryHash = Buffer.from(JSON.stringify(req.query)).toString('base64');
+            if (searchVersion) {
+                cacheKey = `thesis_search:${searchVersion}:${queryHash}`;
+                try {
+                    const cachedData = await redis.get(cacheKey);
+                    if (cachedData) {
+                        return res.json(typeof cachedData === 'string' ? JSON.parse(cachedData) : cachedData);
+                    }
+                } catch (cacheErr) {
+                    console.error("Redis Cache GET Error:", cacheErr);
+                    // Fail gracefully and continue to DB query
+                }
+            }
+        }
+        // --- END CACHE CHECK ---
+
         let filter = { isApproved: true };
 
         if (year && year !== 'all') {
@@ -190,6 +213,17 @@ router.get('/search', auth, async (req, res) => {
         pipeline.push({ $limit: 50 });
 
         const results = await Thesis.aggregate(pipeline);
+
+        // --- CACHE SAVE ---
+        if (redis && cacheKey) {
+            try {
+                // Cache for 86400 seconds (1 day)
+                await redis.set(cacheKey, JSON.stringify(results), { ex: 86400 });
+            } catch (cacheErr) {
+                console.error("Redis Cache SET Error:", cacheErr);
+            }
+        }
+        // --- END CACHE SAVE ---
 
         res.json(results);
     } catch (error) {

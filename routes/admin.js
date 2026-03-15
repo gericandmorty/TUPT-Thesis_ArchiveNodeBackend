@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Thesis = require('../models/Thesis');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
+const { invalidateSearchCache } = require('../modules/cache');
 
 // Apply admin protection to all routes in this file
 router.use(auth, admin);
@@ -209,6 +210,9 @@ router.post('/theses', async (req, res) => {
     try {
         const thesis = new Thesis(req.body);
         await thesis.save();
+        
+        await invalidateSearchCache();
+
         res.status(201).json({ success: true, message: 'Thesis created successfully', data: thesis });
     } catch (err) {
         if (err.code === 11000) {
@@ -224,6 +228,9 @@ router.put('/theses/:id', async (req, res) => {
     try {
         const thesis = await Thesis.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
+        
+        await invalidateSearchCache();
+
         res.json({ success: true, message: 'Thesis updated successfully', data: thesis });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Error updating thesis', error: err.message });
@@ -236,6 +243,9 @@ router.delete('/theses/:id', async (req, res) => {
     try {
         const thesis = await Thesis.findByIdAndDelete(req.params.id);
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
+        
+        await invalidateSearchCache();
+
         res.json({ success: true, message: 'Thesis deleted successfully' });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Error deleting thesis', error: err.message });

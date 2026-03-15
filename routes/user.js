@@ -11,6 +11,7 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const multer = require('multer');
 const { analyzeDocument } = require('../modules/documentAnalyzer');
+const { invalidateSearchCache } = require('../modules/cache');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -58,6 +59,10 @@ router.post('/theses', auth, async (req, res) => {
         });
 
         const thesis = await newThesis.save();
+
+        // Invalidate public search cache
+        await invalidateSearchCache();
+
         res.status(201).json({ success: true, data: thesis });
     } catch (err) {
         console.error('Submission error:', err);

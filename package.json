@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@upstash/redis": "^1.37.0",
     "bcryptjs": "^3.0.3",
     "cloudinary": "^1.41.3",
     "compromise": "^14.15.0",
