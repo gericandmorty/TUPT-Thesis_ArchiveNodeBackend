@@ -8,12 +8,30 @@ if (typeof global.Path2D === 'undefined') {
 
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
+const nlp = require('compromise');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 /**
  * Extracts text from a buffer based on the mimetype, keeping track of pages
  */
 async function extractText(buffer, mimetype) {
-    if (mimetype === 'application/pdf') {
+    // Magic number detection for robustness
+    const signature = buffer.slice(0, 4).toString('hex');
+    const isPDF = signature === '25504446'; // %PDF
+    const isZip = signature.startsWith('504b'); // PK (Zip/Docx)
+
+    let effectiveMimetype = mimetype;
+    if (isPDF) {
+        effectiveMimetype = 'application/pdf';
+        console.log('--- SIGNATURE: PDF detected ---');
+    } else if (isZip) {
+        effectiveMimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        console.log('--- SIGNATURE: DOCX/Zip detected ---');
+    }
+
+    console.log(`Processing file with effective mimetype: ${effectiveMimetype} (Original: ${mimetype})`);
+
+    if (effectiveMimetype === 'application/pdf') {
         const pages = [];
         let currentPage = 1;
 
@@ -36,10 +54,26 @@ async function extractText(buffer, mimetype) {
 
         await pdf(buffer, { pagerender: render_page });
         return pages;
-    } else if (mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    } else if (effectiveMimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
         const result = await mammoth.extractRawText({ buffer });
-        return [{ pageNumber: 1, text: result.value }];
-    } else if (mimetype === 'text/plain') {
+        const fullText = result.value;
+
+        // Split DOCX into "virtual pages" every ~300 words for better UI rendering (Academic Standard)
+        const words = fullText.split(/(\s+)/);
+        const pages = [];
+        const wordsPerPage = 300;
+
+        for (let i = 0; i < words.length; i += wordsPerPage * 2) {
+            const pageText = words.slice(i, i + wordsPerPage * 2).join('');
+            if (pageText.trim()) {
+                pages.push({
+                    pageNumber: Math.floor(i / (wordsPerPage * 2)) + 1,
+                    text: pageText
+                });
+            }
+        }
+        return pages.length > 0 ? pages : [{ pageNumber: 1, text: fullText }];
+    } else if (effectiveMimetype === 'text/plain') {
         return [{ pageNumber: 1, text: buffer.toString('utf8') }];
     }
     throw new Error('Unsupported file type');
@@ -48,7 +82,58 @@ async function extractText(buffer, mimetype) {
 /**
  * Analyzes the text for academic quality
  */
+/**
+ * Detects jumbled or nonsensical text using Rule-Based NLP (Compromise)
+ */
+function detectJumbledText(text) {
+    const doc = nlp(text);
+    const sentences = doc.sentences().json();
+    const jumbledIssues = [];
+
+    sentences.forEach(s => {
+        const words = s.terms.map(t => t.text.toLowerCase());
+        const tags = s.terms.flatMap(t => t.tags);
+
+        // 1. Check for "Noun-Noun-Noun-Noun" (Likely jumbled list or nonsense)
+        let nounCount = 0;
+        let isJumbled = false;
+
+        s.terms.forEach(t => {
+            if (t.tags.includes('Noun')) nounCount++;
+            else nounCount = 0;
+            if (nounCount >= 4) isJumbled = true;
+        });
+
+        // 2. Check for missing verbs in long "sentences"
+        const hasVerb = tags.includes('Verb') || tags.includes('Auxiliary');
+        if (words.length > 6 && !hasVerb) isJumbled = true;
+
+        // 3. Check for repetitive word sequences
+        for (let i = 0; i < words.length - 2; i++) {
+            if (words[i] === words[i + 1] && words[i + 1] === words[i + 2]) {
+                isJumbled = true;
+            }
+        }
+
+        if (isJumbled) {
+            jumbledIssues.push({
+                category: 'Grammar & Style',
+                severity: 'high',
+                title: 'Jumbled Content Detected',
+                description: 'This sentence appears to be jumbled or nonsensical. Academic writing requires clear subject-verb structures.',
+                suggestion: 'Rewrite this section to ensure a clear logical flow and proper academic sentence structure.',
+                context: s.text,
+                targetWord: words[0],
+                suggestionType: 'review' // Indicates manual review/fix needed
+            });
+        }
+    });
+
+    return jumbledIssues;
+}
+
 async function analyzeDocument(buffer, mimetype) {
+    console.log('--- Document Analyzer v2.1 Activated ---');
     try {
         const pages = await extractText(buffer, mimetype);
         const { default: readability } = await import('text-readability');
@@ -83,7 +168,8 @@ async function analyzeDocument(buffer, mimetype) {
                 description: 'The document is quite short for an academic paper.',
                 suggestion: 'Typically, higher education research papers should be at least 1,500 words.',
                 severity: 'medium',
-                pages: [1]
+                pages: [1],
+                context: pages[0]?.text.split('\n')[0].substring(0, 100).trim()
             });
         } else {
             lengthScore = 20;
@@ -93,7 +179,8 @@ async function analyzeDocument(buffer, mimetype) {
                 description: 'The text is extremely brief.',
                 suggestion: 'This entry does not appear to be a full academic research paper.',
                 severity: 'high',
-                pages: [1]
+                pages: [1],
+                context: pages[0]?.text.split('\n')[0].substring(0, 100).trim()
             });
         }
         totalWeightedScore += lengthScore * 0.2;
@@ -203,7 +290,8 @@ async function analyzeDocument(buffer, mimetype) {
                     description: `Could not identify a clear '${section.name}' header.`,
                     suggestion: `Include a formal '${section.name}' section to align with institutional standards.`,
                     severity: section.name === 'References' || section.name === 'Methodology' ? 'high' : 'medium',
-                    pages: []
+                    pages: [1],
+                    context: pages[0]?.text.split('\n')[0].substring(0, 100).trim() // Highlight first line as context
                 });
             }
         });
@@ -212,17 +300,145 @@ async function analyzeDocument(buffer, mimetype) {
         totalWeightedScore += structureScore * 0.4;
         scoreCount += 0.4;
 
+        // 4. AI-Enhanced Writing Style & Vocabulary Audit
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+        // We'll analyze chunks of text to get high-quality suggestions
+        // To save tokens and time, we'll analyze the first 2000 words max for granular style
+        const analysisSample = fullText.substring(0, 10000);
+
+        const prompt = `
+            Act as a professional academic editor specialized in university-level research papers.
+            Analyze the following text for:
+            1. Informal or weak word choices (e.g., "get", "bad", "stuff").
+            2. Passive voice that should be active.
+            3. Wordy or repetitive phrases.
+            4. Tone issues (too casual).
+
+            Return a JSON array of objects strictly in this format:
+            [{
+                "category": "Grammar & Style" | "Writing Style" | "Academic Style",
+                "title": "Word Choice" | "Passive Voice" | "Wordiness" | "Tone",
+                "description": "Short explanation",
+                "suggestion": "Specific improvement suggestion",
+                "suggestionType": "replacement",
+                "targetWord": "EXACT word or phrase to replace (match CASE and SPELLING exactly)",
+                "suggestedWord": "Corrected/Academic version",
+                "context": "The UNIQUE sentence or phrase containing the error (Must match exactly)"
+            }]
+
+            IMPORTANT: The "context" MUST exist exactly as written in the source text.
+            IMPORTANT: "targetWord" MUST be a single word or short phrase that exists WITHIN the "context".
+
+            TEXT TO ANALYZE:
+            "${analysisSample}"
+        `;
+
+        try {
+            const aiResult = await model.generateContent(prompt);
+            const aiResponse = aiResult.response.text();
+
+            // Clean JSON string (Gemini sometimes adds markdown blocks)
+            const cleanJson = aiResponse.replace(/```json|```/g, "").trim();
+            const aiRecommendations = JSON.parse(cleanJson);
+
+            // Add library-based jumbled text detection
+            const fullSample = pages.map(p => p.text).join(' ');
+            const nlpIssues = detectJumbledText(fullSample);
+            const combinedRecommendations = [...nlpIssues, ...aiRecommendations];
+
+            combinedRecommendations.forEach(rec => {
+                // Generate a stable ID if not provided
+                const id = rec.id || `${rec.title}-${rec.context}`.replace(/[^a-z0-9]/gi, '-').substring(0, 50);
+
+                // Find which page this context belongs to
+                const pageIndex = pages.findIndex(p => p.text.includes(rec.context));
+
+                recommendations.push({
+                    ...rec,
+                    id,
+                    severity: rec.severity || 'medium',
+                    pages: pageIndex !== -1 ? [pageIndex + 1] : [1] // Fallback to page 1 if context tracking fails
+                });
+            });
+            console.log(`--- Analysis Complete: Found ${combinedRecommendations.length} suggestions (NLP + AI) ---`);
+        } catch (aiError) {
+            console.error('AI Analysis failed, falling back to rule-based analysis:', aiError);
+
+            // fallback logic (the previous dictionary logic)
+            const academicSynonyms = {
+                'good': 'exemplary', 'bad': 'suboptimal', 'big': 'substantial', 'small': 'minimal',
+                'get': 'obtain', 'show': 'demonstrate', 'think': 'hypothesize', 'thing': 'element'
+            };
+
+            pages.forEach(page => {
+                const sentences = page.text.match(/[^.!?]+[.!?]+/g) || [page.text];
+                sentences.forEach(sentence => {
+                    const trimmed = sentence.trim();
+                    const words = trimmed.split(/\b/);
+                    words.forEach(word => {
+                        const lowerWord = word.toLowerCase();
+                        if (academicSynonyms[lowerWord]) {
+                            recommendations.push({
+                                category: 'Writing Style',
+                                title: 'Word Choice',
+                                description: `Imprecise word: "${word}"`,
+                                suggestion: `Use "${academicSynonyms[lowerWord]}" instead.`,
+                                suggestionType: 'replacement',
+                                targetWord: word,
+                                suggestedWord: academicSynonyms[lowerWord],
+                                severity: 'low',
+                                pages: [page.pageNumber],
+                                context: trimmed
+                            });
+                        }
+                    });
+                });
+            });
+        }
+
+        // 5. Traditional Rule-Based Checks (Speed)
+        const firstPersonRegex = /\b(I|me|my|mine|we|us|our|ours)\b/i;
+        pages.forEach(page => {
+            const sentences = page.text.match(/[^.!?]+[.!?]+/g) || [page.text];
+            sentences.forEach(trimmed => {
+                if (trimmed.length < 10) return;
+                if (firstPersonRegex.test(trimmed)) {
+                    recommendations.push({
+                        category: 'Academic Style',
+                        title: 'First-Person Usage',
+                        description: 'First-person pronouns found.',
+                        suggestion: 'Use third-person for objectivity (e.g., "This study", "The research").',
+                        severity: 'low',
+                        pages: [page.pageNumber],
+                        context: trimmed,
+                        suggestionType: 'review'
+                    });
+                }
+            });
+        });
+
         const overallScore = Math.max(0, Math.min(100, Math.round(totalWeightedScore / scoreCount)));
+
+        // Organize findings into categories for the UI
+        const categories = [
+            { name: 'Structure', color: '#f59e0b', issues: recommendations.filter(r => r.category === 'Structure') },
+            { name: 'Grammar & Style', color: '#ef4444', issues: recommendations.filter(r => r.category === 'Grammar & Style') },
+            { name: 'Writing Style', color: '#3b82f6', issues: recommendations.filter(r => r.category === 'Writing Style') },
+            { name: 'Academic Style', color: '#8b5cf6', issues: recommendations.filter(r => r.category === 'Academic Style') }
+        ];
 
         return {
             overallScore,
             totalIssues: recommendations.length,
             statistics: {
-                wordCount,
-                sentenceCount,
-                paragraphCount,
-                readabilityIndex: Math.round(overallFleschKincaid)
+                wordCount: wordCount || 0,
+                sentenceCount: sentenceCount || 0,
+                paragraphCount: paragraphCount || 0,
+                readabilityIndex: Math.round(overallFleschKincaid) || 0
             },
+            categories,
             recommendations,
             pagesText: pages
         };

@@ -2,6 +2,7 @@ const express = require('express');
 const User = require('../models/User');
 const Thesis = require('../models/Thesis');
 const AiHistory = require('../models/AiHistory');
+const AnalysisDraft = require('../models/AnalysisDraft');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const multer = require('multer');
@@ -246,6 +247,67 @@ router.delete('/ai-history', auth, async (req, res) => {
     } catch (err) {
         console.error('Clear AI history error:', err);
         res.status(500).json({ success: false, message: 'Error clearing AI history', error: err.message });
+    }
+});
+
+// @route   POST /user/analysis-drafts
+// @desc    Save or update a document analysis draft
+router.post('/analysis-drafts', auth, async (req, res) => {
+    try {
+        const { fileName, originalResults, localPagesText, appliedIssueIds } = req.body;
+        
+        if (!fileName) {
+            return res.status(400).json({ success: false, message: 'Filename is required' });
+        }
+
+        // Find existing draft for this user and file
+        let draft = await AnalysisDraft.findOne({ user: req.user, fileName });
+        
+        if (draft) {
+            draft.originalResults = originalResults;
+            draft.localPagesText = localPagesText;
+            draft.appliedIssueIds = appliedIssueIds;
+            draft.lastSaved = Date.now();
+            await draft.save();
+        } else {
+            draft = new AnalysisDraft({
+                user: req.user,
+                fileName,
+                originalResults,
+                localPagesText,
+                appliedIssueIds
+            });
+            await draft.save();
+        }
+        
+        res.json({ success: true, message: 'Draft saved successfully', data: draft });
+    } catch (err) {
+        console.error('Save draft error:', err);
+        res.status(500).json({ success: false, message: 'Error saving draft', error: err.message });
+    }
+});
+
+// @route   GET /user/analysis-drafts
+// @desc    Get all analysis drafts for the logged-in user
+router.get('/analysis-drafts', auth, async (req, res) => {
+    try {
+        const drafts = await AnalysisDraft.find({ user: req.user }).sort({ lastSaved: -1 });
+        res.json({ success: true, data: drafts });
+    } catch (err) {
+        console.error('Fetch drafts error:', err);
+        res.status(500).json({ success: false, message: 'Error fetching drafts', error: err.message });
+    }
+});
+
+// @route   GET /user/analysis-drafts/:fileName
+// @desc    Get a specific analysis draft
+router.get('/analysis-drafts/:fileName', auth, async (req, res) => {
+    try {
+        const draft = await AnalysisDraft.findOne({ user: req.user, fileName: req.params.fileName });
+        res.json({ success: true, data: draft });
+    } catch (err) {
+        console.error('Fetch draft error:', err);
+        res.status(500).json({ success: false, message: 'Error fetching draft', error: err.message });
     }
 });
 
