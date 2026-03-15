@@ -35,7 +35,8 @@ router.post('/register', async (req, res) => {
                 name: user.name,
                 idNumber: user.idNumber,
                 birthdate: user.birthdate,
-                isAdmin: user.isAdmin
+                isAdmin: user.isAdmin,
+                profilePhoto: user.profilePhoto
             }
         });
 
@@ -72,7 +73,8 @@ router.post('/login', async (req, res) => {
                 name: user.name,
                 idNumber: user.idNumber,
                 birthdate: user.birthdate,
-                isAdmin: user.isAdmin
+                isAdmin: user.isAdmin,
+                profilePhoto: user.profilePhoto
             }
         });
 
@@ -114,7 +116,8 @@ router.post('/admin/login', async (req, res) => {
                 name: user.name,
                 idNumber: user.idNumber,
                 birthdate: user.birthdate,
-                isAdmin: user.isAdmin
+                isAdmin: user.isAdmin,
+                profilePhoto: user.profilePhoto
             }
         });
 
