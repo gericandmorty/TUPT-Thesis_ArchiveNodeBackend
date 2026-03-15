@@ -34,6 +34,10 @@ const userSchema = new mongoose.Schema({
     isAdmin: {
         type: Boolean,
         default: false
+    },
+    profilePhoto: {
+        type: String,
+        default: null
     }
 }, {
     timestamps: true // Adds createdAt and updatedAt automatically

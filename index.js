@@ -24,6 +24,7 @@ app.use(cors({
     credentials: true
 }));
 app.use(express.json());
+app.use('/uploads', express.static('uploads'));
 
 // Routes
 app.use('/auth', require('./routes/auth'));
