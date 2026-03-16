@@ -6,7 +6,7 @@ const jwt = require('jsonwebtoken');
 // Register
 router.post('/register', async (req, res) => {
     try {
-        const { name, idNumber, birthdate, password } = req.body;
+        const { name, idNumber, birthdate, password, isGraduate } = req.body;
 
         // Check if user exists
         const existingUser = await User.findOne({ idNumber });
@@ -19,7 +19,8 @@ router.post('/register', async (req, res) => {
             name,
             idNumber,
             birthdate,
-            password
+            password,
+            isGraduate: isGraduate || false
         });
 
         await user.save();
@@ -36,6 +37,7 @@ router.post('/register', async (req, res) => {
                 idNumber: user.idNumber,
                 birthdate: user.birthdate,
                 isAdmin: user.isAdmin,
+                isGraduate: user.isGraduate,
                 profilePhoto: user.profilePhoto
             }
         });
@@ -74,6 +76,7 @@ router.post('/login', async (req, res) => {
                 idNumber: user.idNumber,
                 birthdate: user.birthdate,
                 isAdmin: user.isAdmin,
+                isGraduate: user.isGraduate,
                 profilePhoto: user.profilePhoto
             }
         });
@@ -117,6 +120,7 @@ router.post('/admin/login', async (req, res) => {
                 idNumber: user.idNumber,
                 birthdate: user.birthdate,
                 isAdmin: user.isAdmin,
+                isGraduate: user.isGraduate,
                 profilePhoto: user.profilePhoto
             }
         });

@@ -82,6 +82,62 @@ router.get('/theses', auth, async (req, res) => {
     }
 });
 
+// @route   PUT /user/theses/:id
+// @desc    Update a thesis created by the logged-in user
+router.put('/theses/:id', auth, async (req, res) => {
+    try {
+        const { title, abstract, author, year_range, category } = req.body;
+        
+        let thesis = await Thesis.findOne({ _id: req.params.id, createdBy: req.user });
+
+        if (!thesis) {
+            return res.status(404).json({ success: false, message: 'Thesis not found or unauthorized' });
+        }
+
+        // Update fields
+        if (title) thesis.title = title;
+        if (abstract) thesis.abstract = abstract;
+        if (author) thesis.author = author;
+        if (year_range) thesis.year_range = year_range;
+        if (category) thesis.category = category;
+        
+        // Reset approval status on edit to require re-review
+        thesis.isApproved = false;
+
+        await thesis.save();
+        
+        // Invalidate public search cache
+        await invalidateSearchCache();
+
+        res.json({ success: true, data: thesis });
+    } catch (err) {
+        console.error('Update error:', err);
+        res.status(500).json({ success: false, message: 'Error updating thesis', error: err.message });
+    }
+});
+
+// @route   DELETE /user/theses/:id
+// @desc    Delete a thesis created by the logged-in user
+router.delete('/theses/:id', auth, async (req, res) => {
+    try {
+        const thesis = await Thesis.findOne({ _id: req.params.id, createdBy: req.user });
+
+        if (!thesis) {
+            return res.status(404).json({ success: false, message: 'Thesis not found or unauthorized' });
+        }
+
+        await thesis.deleteOne();
+        
+        // Invalidate public search cache
+        await invalidateSearchCache();
+
+        res.json({ success: true, message: 'Thesis deleted successfully' });
+    } catch (err) {
+        console.error('Delete error:', err);
+        res.status(500).json({ success: false, message: 'Error deleting thesis', error: err.message });
+    }
+});
+
 
 router.get('/profile', auth, async (req, res) => {
     try {

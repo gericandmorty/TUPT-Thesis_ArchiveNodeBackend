@@ -35,6 +35,10 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    isGraduate: {
+        type: Boolean,
+        default: false
+    },
     profilePhoto: {
         type: String,
         default: null
