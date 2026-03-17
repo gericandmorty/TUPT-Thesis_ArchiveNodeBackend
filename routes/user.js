@@ -6,11 +6,12 @@ const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const User = require('../models/User');
 const Thesis = require('../models/Thesis');
 const AiHistory = require('../models/AiHistory');
+const LocalComparison = require('../models/LocalComparison');
 const AnalysisDraft = require('../models/AnalysisDraft');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const multer = require('multer');
-const { analyzeDocument } = require('../modules/documentAnalyzer');
+const { analyzeDocument, findSimilarity } = require('../modules/documentAnalyzer');
 const { invalidateSearchCache } = require('../modules/cache');
 
 // Configure Cloudinary
@@ -280,9 +281,24 @@ router.post('/analyze', auth, upload.single('thesis'), async (req, res) => {
 
         const stats = await analyzeDocument(req.file.buffer, req.file.mimetype);
 
+        // --- Similarity Analysis ---
+        const allTheses = await Thesis.find({}).select('title abstract id');
+        
+        // Refined extraction: Filter empty lines and find potential title (longest of first 5 non-empty lines)
+        const firstLines = (stats.pagesText[0]?.text || "").split('\n').map(l => l.trim()).filter(l => l.length > 5).slice(0, 10);
+        let predictedTitle = "Untitled Document";
+        if (firstLines.length > 0) {
+            predictedTitle = firstLines.reduce((a, b) => a.length > b.length ? a : b);
+        }
+        
+        const predictedAbstract = stats.pagesText.map(p => p.text).join(' ').substring(0, 10000);
+
+        const similarity = await findSimilarity(predictedTitle, predictedAbstract, allTheses);
+
         res.json({
             success: true,
-            ...stats
+            ...stats,
+            similarity
         });
 
     } catch (err) {
@@ -476,6 +492,34 @@ router.post('/ai-history', auth, async (req, res) => {
     } catch (err) {
         console.error('Save AI history error:', err);
         res.status(500).json({ success: false, message: 'Error saving AI history', error: err.message });
+    }
+});
+
+// @route   GET /user/local-history
+// @desc    Get all local title comparison history for the user
+router.get('/local-history', auth, async (req, res) => {
+    try {
+        const history = await LocalComparison.find({ user: req.user }).sort({ createdAt: -1 });
+        res.json({ success: true, data: history });
+    } catch (err) {
+        console.error('Fetch local history error:', err);
+        res.status(500).json({ success: false, message: 'Error fetching local history', error: err.message });
+    }
+});
+
+// @route   DELETE /user/local-history/:id
+// @desc    Delete a specific local comparison history record
+router.delete('/local-history/:id', auth, async (req, res) => {
+    try {
+        const history = await LocalComparison.findOne({ _id: req.params.id, user: req.user });
+        if (!history) {
+            return res.status(404).json({ success: false, message: 'Record not found' });
+        }
+        await history.deleteOne();
+        res.json({ success: true, message: 'Record deleted' });
+    } catch (err) {
+        console.error('Delete local history error:', err);
+        res.status(500).json({ success: false, message: 'Error deleting record', error: err.message });
     }
 });
 

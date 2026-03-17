@@ -23,13 +23,9 @@ async function extractText(buffer, mimetype) {
     let effectiveMimetype = mimetype;
     if (isPDF) {
         effectiveMimetype = 'application/pdf';
-        console.log('--- SIGNATURE: PDF detected ---');
     } else if (isZip) {
         effectiveMimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-        console.log('--- SIGNATURE: DOCX/Zip detected ---');
     }
-
-    console.log(`Processing file with effective mimetype: ${effectiveMimetype} (Original: ${mimetype})`);
 
     if (effectiveMimetype === 'application/pdf') {
         const pages = [];
@@ -133,7 +129,6 @@ function detectJumbledText(text) {
 }
 
 async function analyzeDocument(buffer, mimetype) {
-    console.log('--- Document Analyzer v2.1 Activated ---');
     try {
         const pages = await extractText(buffer, mimetype);
         const { default: readability } = await import('text-readability');
@@ -362,7 +357,6 @@ async function analyzeDocument(buffer, mimetype) {
                     pages: pageIndex !== -1 ? [pageIndex + 1] : [1] // Fallback to page 1 if context tracking fails
                 });
             });
-            console.log(`--- Analysis Complete: Found ${combinedRecommendations.length} suggestions (NLP + AI) ---`);
         } catch (aiError) {
             console.error('AI Analysis failed, falling back to rule-based analysis:', aiError);
 
@@ -449,6 +443,81 @@ async function analyzeDocument(buffer, mimetype) {
     }
 }
 
+/**
+ * Calculates string similarity using Dice's Coefficient
+ */
+function calculateSimilarity(str1, str2) {
+    if (!str1 || !str2) return 0;
+    const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    if (s1 === s2) return 1;
+    if (s1.length < 2 || s2.length < 2) return 0;
+
+    let bigrams1 = new Set();
+    for (let i = 0; i < s1.length - 1; i++) {
+        bigrams1.add(s1.substring(i, i + 2));
+    }
+
+    let bigrams2 = new Set();
+    for (let i = 0; i < s2.length - 1; i++) {
+        bigrams2.add(s2.substring(i, i + 2));
+    }
+
+    let intersect = 0;
+    for (let bigram of bigrams2) {
+        if (bigrams1.has(bigram)) intersect++;
+    }
+
+    const diceScore = (2 * intersect) / (bigrams1.size + bigrams2.size);
+
+    // Complement with Keyword Overlap (Jaccard on words)
+    const words1 = new Set(s1.split(/\s+/).filter(w => w.length > 2));
+    const words2 = new Set(s2.split(/\s+/).filter(w => w.length > 2));
+    
+    if (words1.size === 0 || words2.size === 0) return diceScore;
+
+    let wordIntersect = 0;
+    for (let word of words2) {
+        if (words1.has(word)) wordIntersect++;
+    }
+    const overlapScore = wordIntersect / Math.max(words1.size, words2.size);
+
+    // Return the better of the two or a weighted average
+    return Math.max(diceScore, overlapScore);
+}
+
+/**
+ * Finds the most similar thesis in the database
+ */
+async function findSimilarity(newTitle, newAbstract, allTheses) {
+    let maxSimilarity = 0;
+    let mostSimilarThesis = null;
+
+    for (const thesis of allTheses) {
+        // Weighted similarity: Title (40%) + Abstract (60%)
+        const titleSim = calculateSimilarity(newTitle, thesis.title);
+        const abstractSim = calculateSimilarity(newAbstract, thesis.abstract);
+        
+        const combinedSim = (titleSim * 0.4) + (abstractSim * 0.6);
+
+        if (combinedSim > maxSimilarity) {
+            maxSimilarity = combinedSim;
+            mostSimilarThesis = thesis;
+        }
+    }
+
+    return {
+        percentage: Math.round(maxSimilarity * 100),
+        matches: mostSimilarThesis ? {
+            id: mostSimilarThesis.id,
+            title: mostSimilarThesis.title
+        } : null
+    };
+}
+
 module.exports = {
-    analyzeDocument
+    analyzeDocument,
+    findSimilarity,
+    calculateSimilarity
 };

@@ -1,9 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const Thesis = require('../models/Thesis');
+const LocalComparison = require('../models/LocalComparison');
 const auth = require('../middleware/auth');
 const { generateText } = require('../modules/ai');
 const { redis, getSearchCacheVersion } = require('../modules/cache');
+const { findSimilarity } = require('../modules/documentAnalyzer');
 
 // --- STATIC ROUTES FIRST ---
 
@@ -267,6 +269,106 @@ router.post('/recommendations', auth, async (req, res) => {
     } catch (error) {
         console.error('Error generating AI recommendation:', error);
         res.status(500).json({ message: 'Server error generating AI recommendation' });
+    }
+});
+
+// @route   POST /thesis/compare-local
+// @desc    Compare a proposed title against the local archive and suggest improvements
+router.post('/compare-local', auth, async (req, res) => {
+    try {
+        const { title } = req.body;
+
+        if (!title) {
+            return res.status(400).json({ message: 'Please provide a title to compare' });
+        }
+
+        const allTheses = await Thesis.find({ isApproved: true }).select('title abstract id');
+        
+        // Use findSimilarity logic but weighted heavily towards title for this specific check
+        // We'll calculate a manual title-only similarity check here
+        let maxSim = 0;
+        let bestMatch = null;
+        
+        const { calculateSimilarity } = require('../modules/documentAnalyzer'); // Helper if needed, or just use findSimilarity with empty abstract
+
+        // Use findSimilarity with an empty abstract to focus on title, but let's do a title-focused check
+        const result = await findSimilarity(title, "", allTheses);
+        
+        // Also do a pure title match check
+        let pureTitleSim = 0;
+        let pureTitleMatch = null;
+        
+        for (const t of allTheses) {
+            const sim = calculateSimilarity(title, t.title);
+            if (sim > pureTitleSim) {
+                pureTitleSim = sim;
+                pureTitleMatch = t;
+            }
+        }
+
+        let aiPrompt = "";
+        if (pureTitleSim > 0.4) {
+             aiPrompt = `
+                The user wants to use this thesis title: "${title}".
+                Our archive already has a very similar title: "${pureTitleMatch.title}".
+                
+                Please suggest 3-5 improved, more specific, and unique title variations that:
+                1. Avoid duplicating the existing research.
+                2. Use stronger academic vocabulary.
+                3. Are more professional and specific.
+                
+                Format the response with these sections:
+                Analysis: [Briefly explain why it's too similar]
+                Improvements: [Bulleted list of new title ideas]
+                Final Tip: [A short piece of advice on uniqueness]
+            `;
+        } else {
+            aiPrompt = `
+                The user wants to use this thesis title: "${title}".
+                It seems fairly unique compared to our archive.
+                
+                Please suggest 3-5 ways to polish or improve this title to make it sound more professional and academic.
+                
+                Format the response with these sections:
+                Analysis: [Briefly evaluate the current title]
+                Improvements: [Bulleted list of polished title ideas]
+                Final Tip: [A short piece of advice on academic titles]
+            `;
+        }
+
+        const recommendation = await generateText(aiPrompt);
+
+        // Save to history if user is authenticated
+        if (req.user) {
+            try {
+                const historyEntry = new LocalComparison({
+                    user: req.user,
+                    searchQuery: title,
+                    similarityScore: Math.round(pureTitleSim * 100),
+                    matchedTitle: pureTitleMatch ? pureTitleMatch.title : null,
+                    matchedId: pureTitleMatch ? pureTitleMatch.id : null,
+                    recommendation: recommendation
+                });
+                await historyEntry.save();
+            } catch (saveErr) {
+                console.error('Failed to save local comparison history:', saveErr);
+                // Don't fail the request just because history saving failed
+            }
+        }
+
+        res.json({
+            success: true,
+            similarity: Math.round(pureTitleSim * 100),
+            match: pureTitleMatch ? {
+                id: pureTitleMatch.id,
+                title: pureTitleMatch.title
+            } : null,
+            recommendation
+        });
+
+    } catch (err) {
+        console.error('Local comparison error:', err);
+        res.status(500).json({ success: false, message: 'Error during local comparison', error: err.message });
     }
 });
 
