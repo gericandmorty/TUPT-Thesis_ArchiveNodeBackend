@@ -253,15 +253,19 @@ router.get('/:id', auth, async (req, res) => {
 // @desc    Get AI-generated thesis recommendations based on a prompt or context
 router.post('/recommendations', auth, async (req, res) => {
     try {
-        const { prompt } = req.body;
+        const { prompt, query } = req.body;
 
         if (!prompt) {
             return res.status(400).json({ message: 'Please provide a prompt for the AI' });
         }
 
-        // Example: You can query the database here to give context to the AI
-        // const theses = await Thesis.find({ isApproved: true }).limit(5);
-        // const contextPrompt = `Suggest based on these: ${theses.map(t => t.title).join(', ')}. Query: ${prompt}`;
+        // Check if the query is just a single word
+        const targetQuery = query || prompt;
+        if (targetQuery && targetQuery.trim().split(/\s+/).length <= 1) {
+            return res.json({ 
+                recommendation: "In the analysis on recommending and comparison of the title, one word isn't enough for a valid title." 
+            });
+        }
 
         const aiResponse = await generateText(prompt);
 
@@ -280,6 +284,16 @@ router.post('/compare-local', auth, async (req, res) => {
 
         if (!title) {
             return res.status(400).json({ message: 'Please provide a title to compare' });
+        }
+
+        // Check if the title is just a single word
+        if (title.trim().split(/\s+/).length <= 1) {
+            return res.json({
+                success: true,
+                similarity: 0,
+                match: null,
+                recommendation: "In the analysis on recommending and comparison of the title, one word isn't enough for a valid title."
+            });
         }
 
         const allTheses = await Thesis.find({ isApproved: true }).select('title abstract id');
