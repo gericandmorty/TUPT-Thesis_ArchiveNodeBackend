@@ -164,4 +164,9 @@ router.post('/forgot-password', async (req, res) => {
     }
 });
 
-module.exports = router;
+// Logout
+router.post('/logout', (req, res) => {
+    res.json({ message: 'Logged out successfully' });
+});
+
+module.exports = router;
