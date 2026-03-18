@@ -523,4 +523,16 @@ router.delete('/local-history/:id', auth, async (req, res) => {
     }
 });
 
+// @route   DELETE /user/local-history
+// @desc    Clear all local comparison history for the user
+router.delete('/local-history', auth, async (req, res) => {
+    try {
+        await LocalComparison.deleteMany({ user: req.user });
+        res.json({ success: true, message: 'All local history records deleted' });
+    } catch (err) {
+        console.error('Clear local history error:', err);
+        res.status(500).json({ success: false, message: 'Error clearing local history', error: err.message });
+    }
+});
+
 module.exports = router;
