@@ -323,30 +323,61 @@ router.post('/compare-local', auth, async (req, res) => {
         let aiPrompt = "";
         if (pureTitleSim > 0.4) {
              aiPrompt = `
-                The user wants to use this thesis title: "${title}".
-                Our archive already has a very similar title: "${pureTitleMatch.title}".
+                Role: Senior Academic Research Consultant
+                Context: A student is proposing a thesis title that is highly similar to an existing work in our TUPT archive.
                 
-                Please suggest 3-5 improved, more specific, and unique title variations that:
-                1. Avoid duplicating the existing research.
-                2. Use stronger academic vocabulary.
-                3. Are more professional and specific.
+                Thesis Title: "${title}"
+                Existing Similar Match: "${pureTitleMatch.title}"
                 
-                Format the response with these sections:
-                Analysis: [Briefly explain why it's too similar]
-                Improvements: [Bulleted list of new title ideas]
-                Final Tip: [A short piece of advice on uniqueness]
+                Task: Analyze the overlap and provide strictly academic recommendations.
+                
+                Requirements:
+                1. Scope: Only discuss academic research and methodology.
+                2. Tone: Professional and authoritative.
+                3. Reject non-research topics: If the query is unrelated to academia, politely state it's out of scope.
+                
+                CRITICAL FORMATTING RULES:
+                - Use EXACTLY these section headers: Analysis:, Improvements:, Final Tip:
+                - DO NOT wrap headers in asterisks (NO *Analysis:*, NO **Analysis:**).
+                - Use double newlines (\\n\\n) between sections.
+                - For "Improvements", provide a clear list.
+                
+                Format your response EXACTLY as follows:
+                Analysis: [Explain the institutional overlap]
+                
+                Improvements:
+                - [Specific Variation 1]
+                - [Specific Variation 2]
+                - [Specific Variation 3]
+                
+                Final Tip: [Brief expert advice]
             `;
         } else {
             aiPrompt = `
-                The user wants to use this thesis title: "${title}".
-                It seems fairly unique compared to our archive.
+                Role: Senior Academic Research Consultant
+                Context: A student is proposing a new thesis title: "${title}".
                 
-                Please suggest 3-5 ways to polish or improve this title to make it sound more professional and academic.
+                Task: Evaluate and polish this title for academic rigor.
                 
-                Format the response with these sections:
-                Analysis: [Briefly evaluate the current title]
-                Improvements: [Bulleted list of polished title ideas]
-                Final Tip: [A short piece of advice on academic titles]
+                Requirements:
+                1. Scope: Focus on academic clarity and methodological strength.
+                2. Tone: Expert-level.
+                3. Reject non-research topics: If the query is unrelated to academia, politely state it's out of scope.
+                
+                CRITICAL FORMATTING RULES:
+                - Use EXACTLY these section headers: Analysis:, Improvements:, Final Tip:
+                - DO NOT wrap headers in asterisks (NO *Analysis:*, NO **Analysis:**).
+                - Use double newlines (\\n\\n) between sections.
+                
+                Format your response EXACTLY as follows:
+                Analysis: [Assess the academic potential]
+                
+                Improvements:
+                - [Polished Variation 1]
+                - [Polished Variation 2]
+                - [Polished Variation 3]
+                
+                Final Tip: [Brief expert tip]
             `;
         }
 
