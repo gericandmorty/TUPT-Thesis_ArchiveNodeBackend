@@ -115,7 +115,11 @@ router.get('/search', auth, async (req, res) => {
         let filter = { isApproved: true };
 
         if (year && year !== 'all') {
-            filter.year_range = year;
+            if (/^\d{4}$/.test(year)) {
+                filter.year_range = { $regex: year, $options: 'i' };
+            } else {
+                filter.year_range = year;
+            }
         }
 
         if (since) {
@@ -136,9 +140,9 @@ router.get('/search', auth, async (req, res) => {
         if (category && category !== 'all') {
             const catLower = category.toLowerCase();
             if (catLower === 'uncategorized') {
-                filter.category = { $in: [null, 'Uncategorized', 'uncategorized', ''] };
+                filter.category = { $in: [null, 'Uncategorized', 'uncategorized', '', 'uncategorized'] };
             } else {
-                filter.category = category;
+                filter.category = { $regex: new RegExp(`^${category}$`, 'i') };
             }
         }
 

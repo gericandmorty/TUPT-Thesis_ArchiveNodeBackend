@@ -188,21 +188,54 @@ router.delete('/users/:id', async (req, res) => {
 // @desc    Get all theses (paginated & searchable)
 router.get('/theses', async (req, res) => {
     try {
+        const { search, category, year, sort } = req.query;
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
-        const search = req.query.search || '';
         const skip = (page - 1) * limit;
+        
+        const query = {};
 
-        const query = search ? {
-            $or: [
+        // Search logic
+        if (search) {
+            query.$or = [
                 { title: { $regex: search, $options: 'i' } },
                 { author: { $regex: search, $options: 'i' } }
-            ]
-        } : {};
+            ];
+        }
+
+        // Category filter
+        if (category && category !== 'all') {
+            if (category.toLowerCase() === 'uncategorized') {
+                query.category = { $in: [null, 'Uncategorized', 'uncategorized', ''] };
+            } else {
+                query.category = category;
+            }
+        }
+
+        // Year filter
+        if (year && year !== 'all') {
+            const yearLower = year.toLowerCase();
+            if (yearLower === 'unknown') {
+                query.year_range = { $in: [null, 'unknown', ''] };
+            } else if (yearLower === 'inconsistent') {
+                query.year_range = { $not: /\d{4}/ };
+            } else if (/^\d{4}$/.test(year)) {
+                // If it's a 4-digit year, match anything containing it
+                query.year_range = { $regex: year, $options: 'i' };
+            } else {
+                query.year_range = year;
+            }
+        }
+
+        // Sort logic
+        let sortOption = { createdAt: -1 };
+        if (sort === 'oldest') sortOption = { createdAt: 1 };
+        else if (sort === 'title_asc') sortOption = { title: 1 };
+        else if (sort === 'title_desc') sortOption = { title: -1 };
 
         const [theses, total] = await Promise.all([
             Thesis.find(query)
-                .sort({ createdAt: -1 })
+                .sort(sortOption)
                 .skip(skip)
                 .limit(limit),
             Thesis.countDocuments(query)
@@ -220,6 +253,27 @@ router.get('/theses', async (req, res) => {
         });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Error fetching theses', error: err.message });
+    }
+});
+
+// @route   GET /admin/years
+// @desc    Get all distinct years in the DB (including unapproved)
+router.get('/years', async (req, res) => {
+    try {
+        const years = await Thesis.distinct('year_range');
+        // Extract 4-digit years from strings like "September 2024"
+        const yearSet = new Set();
+        years.forEach(y => {
+            if (y && typeof y === 'string') {
+                const match = y.match(/\d{4}/);
+                if (match) yearSet.add(match[0]);
+                else if (y.toLowerCase() === 'unknown') yearSet.add('unknown');
+            }
+        });
+        const sortedYears = Array.from(yearSet).sort().reverse();
+        res.json(sortedYears);
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'Error fetching years', error: err.message });
     }
 });
 
