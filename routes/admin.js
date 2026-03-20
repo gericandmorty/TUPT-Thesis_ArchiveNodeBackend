@@ -13,10 +13,11 @@ router.use(auth, admin);
 // @desc    Get dashboard statistics
 router.get('/stats', async (req, res) => {
     try {
-        const [userCount, thesisCount, pendingCount] = await Promise.all([
+        const [userCount, thesisCount, pendingCount, graduatedCount] = await Promise.all([
             User.countDocuments(),
             Thesis.countDocuments(),
-            Thesis.countDocuments({ isApproved: false })
+            Thesis.countDocuments({ isApproved: false }),
+            User.countDocuments({ isGraduate: true })
         ]);
 
         // Fetch monthly data for the last 6 months
@@ -25,7 +26,7 @@ router.get('/stats', async (req, res) => {
         sixMonthsAgo.setDate(1);
         sixMonthsAgo.setHours(0, 0, 0, 0);
 
-        const [userMonthly, thesisMonthly] = await Promise.all([
+        const [userMonthly, thesisMonthly, graduateMonthly] = await Promise.all([
             User.aggregate([
                 { $match: { createdAt: { $gte: sixMonthsAgo } } },
                 {
@@ -38,6 +39,16 @@ router.get('/stats', async (req, res) => {
             ]),
             Thesis.aggregate([
                 { $match: { createdAt: { $gte: sixMonthsAgo } } },
+                {
+                    $group: {
+                        _id: { month: { $month: "$createdAt" }, year: { $year: "$createdAt" } },
+                        count: { $sum: 1 }
+                    }
+                },
+                { $sort: { "_id.year": 1, "_id.month": 1 } }
+            ]),
+            User.aggregate([
+                { $match: { createdAt: { $gte: sixMonthsAgo }, isGraduate: true } },
                 {
                     $group: {
                         _id: { month: { $month: "$createdAt" }, year: { $year: "$createdAt" } },
@@ -60,11 +71,13 @@ router.get('/stats', async (req, res) => {
 
             const userData = userMonthly.find(d => d._id.month === m && d._id.year === y);
             const thesisData = thesisMonthly.find(d => d._id.month === m && d._id.year === y);
+            const graduateData = graduateMonthly.find(d => d._id.month === m && d._id.year === y);
 
             chartData.push({
                 name: monthNames[m - 1],
                 users: userData ? userData.count : 0,
-                theses: thesisData ? thesisData.count : 0
+                theses: thesisData ? thesisData.count : 0,
+                graduated: graduateData ? graduateData.count : 0
             });
         }
 
@@ -74,6 +87,8 @@ router.get('/stats', async (req, res) => {
                 users: userCount,
                 theses: thesisCount,
                 pending: pendingCount,
+                graduated: graduatedCount,
+                students: userCount - graduatedCount,
                 chartData
             }
         });
@@ -95,12 +110,16 @@ router.get('/users', async (req, res) => {
         const search = req.query.search || '';
         const skip = (page - 1) * limit;
 
-        const query = search ? {
-            $or: [
+        const query = {};
+        if (search) {
+            query.$or = [
                 { name: { $regex: search, $options: 'i' } },
                 { idNumber: { $regex: search, $options: 'i' } }
-            ]
-        } : {};
+            ];
+        }
+        if (req.query.isGraduate !== undefined) {
+            query.isGraduate = req.query.isGraduate === 'true';
+        }
 
         const [users, total] = await Promise.all([
             User.find(query)
