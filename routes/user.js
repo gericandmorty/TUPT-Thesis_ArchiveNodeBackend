@@ -48,7 +48,7 @@ const profileUpload = multer({
 // @desc    Submit a new thesis
 router.post('/theses', auth, async (req, res) => {
     try {
-        const { title, abstract, author, year_range, course, id } = req.body;
+        const { title, abstract, author, year_range, course, id, professorId } = req.body;
 
         const newThesis = new Thesis({
             id: id || `USER-${Date.now()}`, // Fallback ID if not provided
@@ -57,6 +57,7 @@ router.post('/theses', auth, async (req, res) => {
             author,
             year_range,
             course,
+            professorId,
             createdBy: req.user,
             isApproved: false // Always false by default for user submissions
         });
@@ -77,7 +78,10 @@ router.post('/theses', auth, async (req, res) => {
 // @desc    Get all theses created by the logged-in user
 router.get('/theses', auth, async (req, res) => {
     try {
-        const theses = await Thesis.find({ createdBy: req.user }).sort({ createdAt: -1 });
+        const theses = await Thesis.find({ createdBy: req.user })
+            .populate('professorId', 'name idNumber profilePhoto')
+            .populate('approvedBy', 'name idNumber profilePhoto isAdmin')
+            .sort({ createdAt: -1 });
         res.json({ success: true, data: theses });
     } catch (err) {
         console.error('Fetch error:', err);
@@ -147,6 +151,19 @@ router.delete('/theses/:id', auth, async (req, res) => {
     }
 });
 
+// @route   GET /user/professors
+// @desc    Get all registered professors
+router.get('/professors', auth, async (req, res) => {
+    try {
+        const professors = await User.find({ isProfessor: true })
+            .select('name idNumber profilePhoto')
+            .sort({ name: 1 });
+        res.json({ success: true, data: professors });
+    } catch (err) {
+        console.error('Fetch professors error:', err);
+        res.status(500).json({ success: false, message: 'Error fetching professors', error: err.message });
+    }
+});
 
 router.get('/profile', auth, async (req, res) => {
     try {

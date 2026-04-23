@@ -43,6 +43,10 @@ const userSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    isProfessor: {
+        type: Boolean,
+        default: false
+    },
     profilePhoto: {
         type: String,
         default: null
