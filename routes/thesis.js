@@ -6,10 +6,98 @@ const LocalComparison = require('../models/LocalComparison');
 const auth = require('../middleware/auth');
 const { optionalAuth } = auth;
 const { generateText } = require('../modules/ai');
-const { redis, getSearchCacheVersion } = require('../modules/cache');
+const { redis, getSearchCacheVersion, invalidateSearchCache } = require('../modules/cache');
 const { findSimilarity } = require('../modules/documentAnalyzer');
 const AiHistory = require('../models/AiHistory');
 const Collaboration = require('../models/Collaboration');
+const professorMiddleware = require('../middleware/professor');
+
+// @route   GET /thesis/assigned/count
+// @desc    Get count of theses assigned to the logged-in professor
+router.get('/assigned/count', auth, professorMiddleware, async (req, res) => {
+    try {
+        const count = await Thesis.countDocuments({ professorId: req.user, isApproved: false });
+        res.json({ success: true, count });
+    } catch (err) {
+        console.error('Fetch assigned count error:', err);
+        res.status(500).json({ success: false, message: 'Error fetching assigned count', error: err.message });
+    }
+});
+
+// @route   GET /thesis/assigned
+// @desc    Get all theses assigned to the logged-in professor for approval
+router.get('/assigned', auth, professorMiddleware, async (req, res) => {
+    try {
+        const theses = await Thesis.find({ professorId: req.user }).sort({ createdAt: -1 });
+        res.json({ success: true, data: theses });
+    } catch (err) {
+        console.error('Fetch assigned theses error:', err);
+        res.status(500).json({ success: false, message: 'Error fetching assigned theses', error: err.message });
+    }
+});
+
+// @route   PATCH /thesis/:id/approve
+// @desc    Approve a thesis (Professors can only approve theses assigned to them)
+router.patch('/:id/approve', auth, professorMiddleware, async (req, res) => {
+    try {
+        const thesis = await Thesis.findById(req.params.id);
+        
+        if (!thesis) {
+            return res.status(404).json({ success: false, message: 'Thesis not found' });
+        }
+
+        // Only allow if professor is the one assigned or if user is admin
+        const User = require('../models/User');
+        const currentUser = await User.findById(req.user);
+
+        if (!currentUser.isAdmin && thesis.professorId && thesis.professorId.toString() !== req.user.toString()) {
+            return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to approve this thesis.' });
+        }
+
+        thesis.isApproved = true;
+        thesis.approvedBy = req.user;
+        thesis.approvedAt = new Date();
+        await thesis.save();
+        
+        await invalidateSearchCache();
+
+        res.json({ success: true, message: 'Thesis approved successfully', data: thesis });
+    } catch (err) {
+        console.error('Approval error:', err);
+        res.status(500).json({ success: false, message: 'Error approving thesis', error: err.message });
+    }
+});
+
+// @route   PATCH /thesis/:id/disapprove
+// @desc    Disapprove a thesis
+router.patch('/:id/disapprove', auth, professorMiddleware, async (req, res) => {
+    try {
+        const thesis = await Thesis.findById(req.params.id);
+        
+        if (!thesis) {
+            return res.status(404).json({ success: false, message: 'Thesis not found' });
+        }
+
+        const User = require('../models/User');
+        const currentUser = await User.findById(req.user);
+
+        if (!currentUser.isAdmin && thesis.professorId && thesis.professorId.toString() !== req.user.toString()) {
+            return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this thesis.' });
+        }
+
+        thesis.isApproved = false;
+        thesis.approvedBy = null;
+        thesis.approvedAt = null;
+        await thesis.save();
+        
+        await invalidateSearchCache();
+
+        res.json({ success: true, message: 'Thesis disapproved successfully', data: thesis });
+    } catch (err) {
+        console.error('Disapproval error:', err);
+        res.status(500).json({ success: false, message: 'Error disapproving thesis', error: err.message });
+    }
+});
 
 // --- STATIC ROUTES FIRST ---
 
