@@ -54,7 +54,7 @@ router.patch('/:id/approve', auth, professorMiddleware, async (req, res) => {
             return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to approve this thesis.' });
         }
 
-        thesis.isApproved = true;
+        thesis.isProfApproved = true;
         thesis.approvedBy = req.user;
         thesis.approvedAt = new Date();
         await thesis.save();
@@ -85,7 +85,7 @@ router.patch('/:id/disapprove', auth, professorMiddleware, async (req, res) => {
             return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this thesis.' });
         }
 
-        thesis.isApproved = false;
+        thesis.isProfApproved = false;
         thesis.approvedBy = null;
         thesis.approvedAt = null;
         await thesis.save();
@@ -417,15 +417,22 @@ router.get('/find-one/:id', auth, async (req, res) => {
             return res.status(404).json({ message: 'Thesis not found' });
         }
 
-        // Access control: If not approved, only Admin or the Creator can see it
-        if (!thesis.isApproved && !req.user.isAdmin && thesis.createdBy && thesis.createdBy.toString() !== req.user.id) {
-            return res.status(403).json({ message: 'Thesis pending approval' });
+        // Access control: If not approved, only Admin, the Creator, or the Assigned Professor can see it
+        const User = mongoose.model('User');
+        const currentUser = await User.findById(req.user);
+
+        if (!thesis.isApproved && !currentUser?.isAdmin) {
+            const isCreator = thesis.createdBy && thesis.createdBy.toString() === req.user.toString();
+            const isAssignedProf = thesis.professorId && thesis.professorId.toString() === req.user.toString();
+            
+            if (!isCreator && !isAssignedProf) {
+                return res.status(403).json({ message: 'Thesis pending approval' });
+            }
         }
 
         // Add undergrad status
         const thesisData = thesis.toObject();
         if (thesis.createdBy) {
-            const User = mongoose.model('User');
             const creator = await User.findById(thesis.createdBy);
             // Relaxed check: Undergrad if isGraduate is NOT true (handles missing fields)
             thesisData.isUploadedByUndergrad = creator ? (creator.isGraduate !== true) : true;
