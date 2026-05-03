@@ -33,7 +33,7 @@ const upload = multer({
 const profileStorage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
-        folder: 'profilePictures_capstone2',
+        folder: `${process.env.CLOUDINARY_FOLDER_NAME}/profiles`,
         allowed_formats: ['jpg', 'png', 'jpeg'],
         transformation: [{ width: 500, height: 500, crop: 'limit' }]
     }
@@ -44,27 +44,47 @@ const profileUpload = multer({
     limits: { fileSize: 2 * 1024 * 1024 } // 2MB
 });
 
+// Cloudinary storage for thesis submissions (supporting documents)
+const submissionStorage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: `${process.env.CLOUDINARY_FOLDER_NAME}/submissions`,
+        allowed_formats: ['jpg', 'png', 'jpeg', 'pdf'],
+        transformation: [{ width: 1200, height: 1200, crop: 'limit' }]
+    }
+});
+
+const submissionUpload = multer({
+    storage: submissionStorage,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB per file
+});
+
 // @route   POST /user/theses
-// @desc    Submit a new thesis
-router.post('/theses', auth, async (req, res) => {
+// @desc    Submit a new thesis with supporting documents
+router.post('/theses', auth, submissionUpload.array('attachments', 5), async (req, res) => {
     try {
         const { title, abstract, author, year_range, course, id, professorId } = req.body;
 
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ success: false, message: 'Supporting documents are required (1-5 images/PDFs)' });
+        }
+
+        const attachmentUrls = req.files.map(file => file.path);
+
         const newThesis = new Thesis({
-            id: id || `USER-${Date.now()}`, // Fallback ID if not provided
+            id: id || `USER-${Date.now()}`,
             title,
             abstract,
             author,
             year_range,
             course,
             professorId,
+            attachments: attachmentUrls,
             createdBy: req.user,
-            isApproved: false // Always false by default for user submissions
+            isApproved: false
         });
 
         const thesis = await newThesis.save();
-
-        // Invalidate public search cache
         await invalidateSearchCache();
 
         res.status(201).json({ success: true, data: thesis });
@@ -133,6 +153,22 @@ router.delete('/theses/:id', auth, async (req, res) => {
             return res.status(404).json({ success: false, message: 'Thesis not found or unauthorized' });
         }
 
+        // Cleanup Cloudinary attachments
+        if (thesis.attachments && thesis.attachments.length > 0) {
+            try {
+                const deletePromises = thesis.attachments.map(url => {
+                    const parts = url.split('/');
+                    const filenameWithExt = parts[parts.length - 1];
+                    const publicIdWithoutExt = filenameWithExt.split('.')[0];
+                    const fullPublicId = `${process.env.CLOUDINARY_FOLDER_NAME}/submissions/${publicIdWithoutExt}`;
+                    return cloudinary.uploader.destroy(fullPublicId);
+                });
+                await Promise.all(deletePromises);
+            } catch (err) {
+                console.error('Cloudinary cleanup error:', err);
+            }
+        }
+
         await thesis.deleteOne();
         
         // Cascade delete: Remove associated collaborations and session history
@@ -144,7 +180,7 @@ router.delete('/theses/:id', auth, async (req, res) => {
         // Invalidate public search cache
         await invalidateSearchCache();
 
-        res.json({ success: true, message: 'Thesis and associated data deleted successfully' });
+        res.json({ success: true, message: 'Thesis and associated attachments deleted successfully' });
     } catch (err) {
         console.error('Delete error:', err);
         res.status(500).json({ success: false, message: 'Error deleting thesis', error: err.message });

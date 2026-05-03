@@ -41,6 +41,10 @@ const thesisSchema = new mongoose.Schema({
         type: Boolean,
         default: false
     },
+    isProfApproved: {
+        type: Boolean,
+        default: false
+    },
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
@@ -55,7 +59,10 @@ const thesisSchema = new mongoose.Schema({
     },
     approvedAt: {
         type: Date
-    }
+    },
+    attachments: [{
+        type: String // Cloudinary URLs for supporting documents
+    }]
 }, {
     timestamps: true
 });

@@ -8,6 +8,14 @@ const AiHistory = require('../models/AiHistory');
 const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 const { invalidateSearchCache } = require('../modules/cache');
+const cloudinary = require('cloudinary').v2;
+
+// Configure Cloudinary
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_ID,
+    api_key: process.env.CLOUDINARY_API,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 // Apply admin protection to all routes in this file
 router.use(auth, admin);
@@ -337,8 +345,35 @@ router.put('/theses/:id', async (req, res) => {
 // @desc    Delete a thesis
 router.delete('/theses/:id', async (req, res) => {
     try {
-        const thesis = await Thesis.findByIdAndDelete(req.params.id);
+        const thesis = await Thesis.findById(req.params.id);
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
+
+        // Cleanup Cloudinary attachments
+        if (thesis.attachments && thesis.attachments.length > 0) {
+            try {
+                const deletePromises = thesis.attachments.map(url => {
+                    // Extract public_id from Cloudinary URL
+                    // Example: https://res.cloudinary.com/v1_1/cloudname/image/upload/v12345/folder/public_id.jpg
+                    const parts = url.split('/');
+                    const filenameWithExt = parts[parts.length - 1];
+                    const publicIdWithoutExt = filenameWithExt.split('.')[0];
+                    
+                    // The folder path is also part of the public_id if used
+                    // For this project, they are in folder/public_id
+                    const folderName = parts[parts.length - 2];
+                    const fullPublicId = `${process.env.CLOUDINARY_FOLDER_NAME}/submissions/${publicIdWithoutExt}`;
+                    
+                    return cloudinary.uploader.destroy(fullPublicId);
+                });
+                await Promise.all(deletePromises);
+            } catch (err) {
+                console.error('Cloudinary cleanup error:', err);
+                // Continue with DB deletion even if Cloudinary fails
+            }
+        }
+
+        // Now delete from DB
+        await Thesis.findByIdAndDelete(req.params.id);
         
         // Cascade delete: Remove associated collaborations and session history
         await Promise.all([
@@ -348,7 +383,7 @@ router.delete('/theses/:id', async (req, res) => {
         
         await invalidateSearchCache();
 
-        res.json({ success: true, message: 'Thesis and associated data deleted successfully' });
+        res.json({ success: true, message: 'Thesis and associated attachments deleted successfully' });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Error deleting thesis', error: err.message });
     }
@@ -358,17 +393,24 @@ router.delete('/theses/:id', async (req, res) => {
 // @desc    Approve a thesis
 router.patch('/theses/:id/approve', async (req, res) => {
     try {
-        const thesis = await Thesis.findByIdAndUpdate(
-            req.params.id, 
-            { isApproved: true }, 
-            { new: true }
-        );
+        const thesis = await Thesis.findById(req.params.id);
         
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
         
+        // Enforce Multi-Step Approval: Must be approved by Professor first
+        if (!thesis.isProfApproved) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'This document cannot be approved by the Admin yet. It must first be approved by the assigned Professor.' 
+            });
+        }
+
+        thesis.isApproved = true;
+        await thesis.save();
+        
         await invalidateSearchCache();
 
-        res.json({ success: true, message: 'Thesis approved successfully', data: thesis });
+        res.json({ success: true, message: 'Thesis approved successfully and cataloged in the repository.', data: thesis });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Error approving thesis', error: err.message });
     }
