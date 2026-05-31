@@ -2,18 +2,148 @@
  * Plagiarism Checker Module
  * 
  * Hybrid plagiarism detection system:
- * - Layer 1: Local corpus similarity using Shingling + Jaccard coefficient
+ * - Layer 1: Local corpus similarity using:
+ *            1. Shingling + Jaccard coefficient (for exact sequence match)
+ *            2. TF-IDF Vectorizer + Cosine Similarity (for word frequency overlap - Node.js version of scikit-learn)
+ *            3. Sentence Transformers Semantic Search (for semantic synonym matching - Node.js version of SentenceTransformer)
  * - Layer 2: External web plagiarism detection using DuckDuckGo (free, no API key required)
- * 
- * References:
- * - Broder, A. Z. (1997). "On the resemblance and containment of documents"
- * - Rabin fingerprinting for shingle hashing
  */
 
 const crypto = require('crypto');
 
+// Global cache for Xenova SentenceTransformer pipeline
+let pipelineInstance = null;
+
+/**
+ * Loads the local SentenceTransformer embedding pipeline on demand.
+ * Uses Xenova/all-MiniLM-L6-v2, which is small (~90MB) and extremely fast on CPU.
+ */
+async function getEmbeddingPipeline() {
+    if (!pipelineInstance) {
+        try {
+            const { pipeline } = await import('@xenova/transformers');
+            pipelineInstance = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+        } catch (err) {
+            console.error('Failed to load @xenova/transformers library:', err.message);
+        }
+    }
+    return pipelineInstance;
+}
+
+/**
+ * Generates a dense embedding vector for a sentence or text block using SentenceTransformer.
+ * 
+ * @param {string} text - Input text to embed
+ * @returns {Promise<number[] | null>} 384-dimensional dense vector or null
+ */
+async function getSentenceEmbedding(text) {
+    const pipeline = await getEmbeddingPipeline();
+    if (!pipeline) return null;
+
+    try {
+        // Clean text and limit size to avoid transformer sequence length overflow (max 512 tokens)
+        const cleanText = text.substring(0, 1000).replace(/\s+/g, ' ').trim();
+        if (!cleanText) return null;
+
+        const output = await pipeline(cleanText, { pooling: 'mean', normalize: true });
+        return Array.from(output.data);
+    } catch (err) {
+        console.error('Error generating sentence embedding:', err.message);
+        return null;
+    }
+}
+
 // ============================================================
-// LAYER 1: LOCAL CORPUS SIMILARITY (Shingling + Jaccard)
+// TF-IDF VECTORIZER & COSINE SIMILARITY (JS Scikit-Learn Port)
+// ============================================================
+
+class TfidfVectorizer {
+    constructor() {
+        this.vocabulary = new Map(); // word -> index
+        this.idf = [];               // index -> idf value
+        this.documentsCount = 0;
+        this.documentFrequencies = new Map(); // word -> doc count
+    }
+
+    _tokenize(text) {
+        return text.toLowerCase()
+            .replace(/[^\w\s]/g, ' ')
+            .split(/\s+/)
+            .filter(t => t.length > 2); // Ignore short words / numbers
+    }
+
+    fit(corpus) {
+        this.documentsCount = corpus.length;
+        this.vocabulary.clear();
+        this.documentFrequencies.clear();
+
+        // 1. Build document frequency counts
+        corpus.forEach(doc => {
+            const tokens = this._tokenize(doc);
+            const uniqueTokens = new Set(tokens);
+            uniqueTokens.forEach(token => {
+                this.documentFrequencies.set(token, (this.documentFrequencies.get(token) || 0) + 1);
+            });
+        });
+
+        // 2. Build vocabulary index & compute smooth IDF: log(N / (df + 1)) + 1
+        let idx = 0;
+        this.documentFrequencies.forEach((df, token) => {
+            this.vocabulary.set(token, idx);
+            const idfValue = Math.log(this.documentsCount / (df + 1)) + 1;
+            this.idf.push(idfValue);
+            idx++;
+        });
+    }
+
+    transform(doc) {
+        const tokens = this._tokenize(doc);
+        const tf = new Map();
+        tokens.forEach(token => {
+            if (this.vocabulary.has(token)) {
+                tf.set(token, (tf.get(token) || 0) + 1);
+            }
+        });
+
+        const vector = new Array(this.vocabulary.size).fill(0);
+        tf.forEach((count, token) => {
+            const idx = this.vocabulary.get(token);
+            // Normalized TF
+            vector[idx] = count * this.idf[idx];
+        });
+
+        return vector;
+    }
+}
+
+/**
+ * Computes Cosine Similarity between two dense vectors.
+ * Cos(A, B) = (A • B) / (||A|| * ||B||)
+ * 
+ * @param {number[]} vecA 
+ * @param {number[]} vecB 
+ * @returns {number} Cosine similarity score (0 to 1)
+ */
+function cosineSimilarity(vecA, vecB) {
+    if (vecA.length !== vecB.length) return 0;
+    
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+
+    for (let i = 0; i < vecA.length; i++) {
+        dotProduct += vecA[i] * vecB[i];
+        normA += vecA[i] * vecA[i];
+        normB += vecB[i] * vecB[i];
+    }
+
+    if (normA === 0 || normB === 0) return 0;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+
+// ============================================================
+// LAYER 1: LOCAL CORPUS SIMILARITY (Jaccard + TF-IDF + Embeddings)
 // ============================================================
 
 /**
@@ -42,7 +172,6 @@ function createShingles(text, k = 3) {
     const shingles = new Set();
 
     if (words.length < k) {
-        // If text is shorter than k, use the whole text as one shingle
         shingles.add(words.join(' '));
         return shingles;
     }
@@ -58,10 +187,6 @@ function createShingles(text, k = 3) {
 /**
  * Computes Jaccard similarity between two sets.
  * J(A,B) = |A ∩ B| / |A ∪ B|
- * 
- * @param {Set} setA 
- * @param {Set} setB 
- * @returns {number} Similarity score between 0 and 1
  */
 function jaccardSimilarity(setA, setB) {
     if (setA.size === 0 && setB.size === 0) return 0;
@@ -82,11 +207,6 @@ function jaccardSimilarity(setA, setB) {
 /**
  * Computes containment similarity (how much of A is contained in B).
  * C(A,B) = |A ∩ B| / |A|
- * This is better for detecting if a shorter text is copied from a longer one.
- * 
- * @param {Set} setA - The document being checked
- * @param {Set} setB - The reference document
- * @returns {number} Containment score between 0 and 1
  */
 function containmentSimilarity(setA, setB) {
     if (setA.size === 0) return 0;
@@ -101,55 +221,119 @@ function containmentSimilarity(setA, setB) {
 
 /**
  * Checks a document's text against all theses in the local database.
- * Uses shingling + Jaccard/Containment for accurate similarity detection.
+ * Computes Lexical Similarity (TF-IDF Cosine & Jaccard Shingling)
+ * and reranks the top matches using local SentenceTransformers Semantic Search.
  * 
  * @param {string} documentText - Full text of the uploaded document
  * @param {Array} allTheses - Array of thesis objects with { id, title, abstract }
- * @returns {Object} Local similarity results
+ * @returns {Promise<Object>} Local similarity results
  */
-function checkLocalSimilarity(documentText, allTheses) {
-    if (!documentText || documentText.trim().length === 0) {
-        return { percentage: 0, topMatches: [], method: 'shingling-jaccard' };
+async function checkLocalSimilarity(documentText, allTheses) {
+    if (!documentText || documentText.trim().length === 0 || allTheses.length === 0) {
+        return { percentage: 0, topMatches: [], method: 'hybrid-tfidf-semantic' };
     }
 
-    // Create shingles for the uploaded document (using k=3 for abstracts/shorter text)
+    // 1. TF-IDF VECTORIZER FIT & TRANSFORM
+    const corpus = allTheses.map(t => [t.title || '', t.abstract || ''].join(' '));
+    corpus.push(documentText); // Add query to corpus for vocabulary building
+
+    const vectorizer = new TfidfVectorizer();
+    vectorizer.fit(corpus);
+
+    const docTfidfVector = vectorizer.transform(documentText);
     const docShingles = createShingles(documentText, 3);
 
-    if (docShingles.size === 0) {
-        return { percentage: 0, topMatches: [], method: 'shingling-jaccard' };
-    }
+    const initialMatches = [];
 
-    const matches = [];
+    // 2. RETRIEVE CANDIDATES USING LEXICAL METRICS (TF-IDF & Shingling)
+    for (let i = 0; i < allTheses.length; i++) {
+        const thesis = allTheses[i];
+        const thesisText = corpus[i];
 
-    for (const thesis of allTheses) {
-        const thesisText = [thesis.title || '', thesis.abstract || ''].join(' ');
-        if (thesisText.trim().length < 20) continue; // Skip entries with insufficient text
+        if (thesisText.trim().length < 20) continue;
 
+        // TF-IDF Cosine Similarity
+        const thesisVector = vectorizer.transform(thesisText);
+        const tfidfScore = cosineSimilarity(docTfidfVector, thesisVector);
+
+        // Jaccard & Containment Shingling
         const thesisShingles = createShingles(thesisText, 3);
-        if (thesisShingles.size === 0) continue;
-
-        // Use both Jaccard and Containment, take the higher score
         const jaccard = jaccardSimilarity(docShingles, thesisShingles);
         const containment = containmentSimilarity(docShingles, thesisShingles);
-        const score = Math.max(jaccard, containment);
+        const shingleScore = Math.max(jaccard, containment);
 
-        if (score > 0.05) { // Only include matches above 5%
-            matches.push({
+        // Combine lexical scores (take the best lexical representation)
+        const lexicalScore = Math.max(tfidfScore, shingleScore);
+
+        if (lexicalScore > 0.05) {
+            initialMatches.push({
                 thesisId: thesis.id,
                 title: thesis.title,
-                score: Math.round(score * 100)
+                abstract: thesis.abstract || '',
+                lexicalScore: lexicalScore,
+                score: Math.round(lexicalScore * 100) // Initial score
             });
         }
     }
 
-    // Sort by score descending, take top 5
-    matches.sort((a, b) => b.score - a.score);
-    const topMatches = matches.slice(0, 5);
+    // Sort by lexical score and take top 3 candidates for SentenceTransformer semantic reranking
+    initialMatches.sort((a, b) => b.lexicalScore - a.lexicalScore);
+    const topCandidates = initialMatches.slice(0, 3);
+
+    if (topCandidates.length === 0) {
+        return { percentage: 0, topMatches: [], method: 'hybrid-tfidf-semantic' };
+    }
+
+    // 3. SEMANTIC SEARCH RERANKING (SentenceTransformer all-MiniLM-L6-v2)
+    const pipelineAvailable = await getEmbeddingPipeline();
+    const finalMatches = [];
+
+    if (pipelineAvailable) {
+        // Embed the query document's abstract/intro (first 800 characters)
+        const querySample = documentText.substring(0, 800);
+        const queryEmbedding = await getSentenceEmbedding(querySample);
+
+        if (queryEmbedding) {
+            for (const candidate of topCandidates) {
+                // Embed the thesis reference (title + abstract)
+                const thesisSample = [candidate.title, candidate.abstract].join(' ').substring(0, 800);
+                const candidateEmbedding = await getSentenceEmbedding(thesisSample);
+
+                let combinedScore = candidate.lexicalScore;
+
+                if (candidateEmbedding) {
+                    const semanticSimilarity = cosineSimilarity(queryEmbedding, candidateEmbedding);
+                    // Hybrid Score: 50% Lexical + 50% Semantic
+                    combinedScore = (candidate.lexicalScore * 0.5) + (semanticSimilarity * 0.5);
+                }
+
+                finalMatches.push({
+                    thesisId: candidate.thesisId,
+                    title: candidate.title,
+                    score: Math.min(100, Math.round(combinedScore * 100))
+                });
+            }
+        }
+    }
+
+    // Fallback to lexical scores if SentenceTransformer fails
+    if (finalMatches.length === 0) {
+        topCandidates.forEach(c => {
+            finalMatches.push({
+                thesisId: c.thesisId,
+                title: c.title,
+                score: c.score
+            });
+        });
+    }
+
+    // Sort final matches by combined score
+    finalMatches.sort((a, b) => b.score - a.score);
 
     return {
-        percentage: topMatches.length > 0 ? topMatches[0].score : 0,
-        topMatches,
-        method: 'shingling-jaccard'
+        percentage: finalMatches.length > 0 ? finalMatches[0].score : 0,
+        topMatches: finalMatches,
+        method: 'hybrid-tfidf-semantic'
     };
 }
 
@@ -160,32 +344,23 @@ function checkLocalSimilarity(documentText, allTheses) {
 
 /**
  * Extracts representative sentences from text for web searching.
- * Picks the longest, most substantive sentences (not too short, not headings).
- * 
- * @param {string} text - Full document text
- * @param {number} maxSentences - Maximum sentences to extract
- * @returns {string[]} Array of representative sentences
+ * Picks the longest, most substantive sentences.
  */
 function extractRepresentativeSentences(text, maxSentences = 8) {
-    // Split into sentences
     const rawSentences = text.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 0);
 
-    // Filter: must be 8+ words, not all caps (headings), not too short
     const candidates = rawSentences.filter(s => {
         const words = s.split(/\s+/);
         if (words.length < 8) return false;
-        if (words.length > 40) return false; // Too long for search queries
-        if (s === s.toUpperCase()) return false; // Skip ALL CAPS headings
-        if (/^\d+\s/.test(s)) return false; // Skip numbered items like "1. Introduction"
+        if (words.length > 40) return false; 
+        if (s === s.toUpperCase()) return false;
+        if (/^\d+\s/.test(s)) return false; 
         return true;
     });
 
-    // Score sentences by uniqueness (longer + more specific = better)
     const scored = candidates.map(s => {
         const words = s.split(/\s+/);
-        // Prefer sentences with 12-25 words (ideal search query length)
         const lengthScore = words.length >= 12 && words.length <= 25 ? 2 : 1;
-        // Prefer sentences with uncommon/specific words
         const commonWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'this', 'that', 'it', 'with', 'as', 'by', 'from']);
         const specificWords = words.filter(w => !commonWords.has(w.toLowerCase())).length;
         const specificityScore = specificWords / words.length;
@@ -193,10 +368,8 @@ function extractRepresentativeSentences(text, maxSentences = 8) {
         return { sentence: s, score: lengthScore * specificityScore * words.length };
     });
 
-    // Sort by score, spread selections across the document
     scored.sort((a, b) => b.score - a.score);
 
-    // Take top candidates, but ensure they're spread across the document
     const selected = [];
     const textLength = text.length;
 
@@ -206,10 +379,9 @@ function extractRepresentativeSentences(text, maxSentences = 8) {
         const position = text.indexOf(item.sentence);
         const relativePosition = position / textLength;
 
-        // Ensure we don't pick sentences too close together
         const tooClose = selected.some(s => {
             const sPos = text.indexOf(s) / textLength;
-            return Math.abs(relativePosition - sPos) < 0.1; // At least 10% apart
+            return Math.abs(relativePosition - sPos) < 0.1;
         });
 
         if (!tooClose) {
@@ -217,7 +389,6 @@ function extractRepresentativeSentences(text, maxSentences = 8) {
         }
     }
 
-    // If we didn't get enough spread sentences, fill from top-scored
     if (selected.length < Math.min(maxSentences, scored.length)) {
         for (const item of scored) {
             if (selected.length >= maxSentences) break;
@@ -231,15 +402,10 @@ function extractRepresentativeSentences(text, maxSentences = 8) {
 }
 
 /**
- * Searches the web using DuckDuckGo HTML search (completely free, no API key).
- * Parses the lite HTML results page to extract titles, URLs, and snippets.
- * 
- * @param {string} query - Search query (a sentence from the document)
- * @returns {Array} Array of { title, url, snippet }
+ * Searches the web using DuckDuckGo HTML search.
  */
 async function searchDuckDuckGo(query) {
     try {
-        // Use a truncated, quoted phrase for exact matching
         const searchQuery = encodeURIComponent(`"${query.substring(0, 100)}"`);
         const url = `https://html.duckduckgo.com/html/?q=${searchQuery}`;
 
@@ -258,29 +424,20 @@ async function searchDuckDuckGo(query) {
 
         const html = await response.text();
         const results = [];
-
-        // Parse results from the HTML response
-        // DuckDuckGo lite HTML wraps each result in a class="result" div
-        // with class="result__a" for title/link and class="result__snippet" for snippet
-        const resultBlocks = html.split(/class="result\s/g).slice(1); // Skip first split (before results)
+        const resultBlocks = html.split(/class="result\s/g).slice(1);
 
         for (const block of resultBlocks.slice(0, 5)) {
-            // Extract URL from the result link
             const urlMatch = block.match(/href="([^"]+)"/);
-            // Extract title text
             const titleMatch = block.match(/class="result__a"[^>]*>([^<]+)</);
-            // Extract snippet
             const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/);
 
             if (urlMatch && titleMatch) {
                 let resultUrl = urlMatch[1];
-                // DuckDuckGo wraps URLs in a redirect, extract the actual URL
                 const actualUrlMatch = resultUrl.match(/uddg=([^&]+)/);
                 if (actualUrlMatch) {
                     resultUrl = decodeURIComponent(actualUrlMatch[1]);
                 }
 
-                // Clean snippet HTML tags
                 let snippet = snippetMatch ? snippetMatch[1].replace(/<[^>]+>/g, '').trim() : '';
 
                 results.push({
@@ -299,39 +456,7 @@ async function searchDuckDuckGo(query) {
 }
 
 /**
- * Searches using Serper.dev API if key is available (optional upgrade).
- */
-async function searchSerper(query, apiKey) {
-    try {
-        const searchQuery = `"${query.substring(0, 128)}"`;
-        const response = await fetch('https://google.serper.dev/search', {
-            method: 'POST',
-            headers: {
-                'X-API-KEY': apiKey,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ q: searchQuery, num: 5 })
-        });
-
-        if (!response.ok) return [];
-        const data = await response.json();
-        return (data.organic || []).slice(0, 5).map(item => ({
-            title: item.title || '',
-            url: item.link || '',
-            snippet: item.snippet || ''
-        }));
-    } catch (err) {
-        console.error('Serper search error:', err.message);
-        return [];
-    }
-}
-
-/**
  * Computes text similarity between two strings using word overlap.
- * 
- * @param {string} text1 
- * @param {string} text2 
- * @returns {number} Similarity score between 0 and 1
  */
 function snippetSimilarity(text1, text2) {
     const normalize = t => t.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
@@ -341,7 +466,6 @@ function snippetSimilarity(text1, text2) {
     if (!s1 || !s2) return 0;
     if (s1 === s2) return 1;
 
-    // Word-level overlap (more meaningful for natural language)
     const words1 = new Set(s1.split(' ').filter(w => w.length > 2));
     const words2 = new Set(s2.split(' ').filter(w => w.length > 2));
 
@@ -352,27 +476,18 @@ function snippetSimilarity(text1, text2) {
         if (words2.has(word)) overlap++;
     }
 
-    // Use containment (what fraction of the query words appear in the result)
     return overlap / words1.size;
 }
 
 /**
- * Performs web plagiarism check by searching representative sentences online.
- * Uses DuckDuckGo (free, no API key) by default. Falls back to Serper.dev if configured.
- * 
- * @param {string} documentText - Full document text
- * @param {string} serperApiKey - Optional Serper.dev API key for better results
- * @returns {Object} Web plagiarism results
+ * Performs web plagiarism check.
  */
-async function checkWebPlagiarism(documentText, serperApiKey) {
+async function checkWebPlagiarism(documentText) {
     const sentences = extractRepresentativeSentences(documentText, 8);
 
     if (sentences.length === 0) {
         return { percentage: 0, sourcesFound: 0, matches: [], sentencesChecked: 0 };
     }
-
-    const useSerper = serperApiKey && serperApiKey.trim().length > 0;
-    const searchEngine = useSerper ? 'Serper.dev (Google)' : 'DuckDuckGo';
 
     const allMatches = [];
     const uniqueSources = new Set();
@@ -380,22 +495,17 @@ async function checkWebPlagiarism(documentText, serperApiKey) {
     let checkedCount = 0;
 
     for (const sentence of sentences) {
-        // Rate limiting: 600ms delay between queries (be polite to DuckDuckGo/avoid rate limits)
         if (checkedCount > 0) {
-            await new Promise(resolve => setTimeout(resolve, useSerper ? 200 : 600));
+            await new Promise(resolve => setTimeout(resolve, 600)); // Rate limit check
         }
 
-        const results = useSerper
-            ? await searchSerper(sentence, serperApiKey)
-            : await searchDuckDuckGo(sentence);
-
+        const results = await searchDuckDuckGo(sentence);
         checkedCount++;
 
         for (const result of results) {
-            // Compare the search snippet with our sentence
             const sim = snippetSimilarity(sentence, result.snippet);
 
-            if (sim > 0.4) { // 40% word overlap threshold
+            if (sim > 0.4) {
                 uniqueSources.add(result.url);
                 allMatches.push({
                     sentence: sentence.substring(0, 150) + (sentence.length > 150 ? '...' : ''),
@@ -407,7 +517,6 @@ async function checkWebPlagiarism(documentText, serperApiKey) {
             }
         }
 
-        // Track average similarity for sentences that had results
         if (results.length > 0) {
             const bestMatch = results.reduce((best, r) => {
                 const sim = snippetSimilarity(sentence, r.snippet);
@@ -417,18 +526,15 @@ async function checkWebPlagiarism(documentText, serperApiKey) {
         }
     }
 
-    // Sort matches by similarity descending
     allMatches.sort((a, b) => b.similarity - a.similarity);
-
-    // Overall web similarity: average of best matches per sentence
     const avgSimilarity = checkedCount > 0 ? (totalSimilarity / checkedCount) * 100 : 0;
 
     return {
         percentage: Math.round(avgSimilarity),
         sourcesFound: uniqueSources.size,
         sentencesChecked: checkedCount,
-        searchEngine,
-        matches: allMatches.slice(0, 10), // Top 10 matches
+        searchEngine: 'DuckDuckGo',
+        matches: allMatches.slice(0, 10),
     };
 }
 
@@ -442,25 +548,22 @@ async function checkWebPlagiarism(documentText, serperApiKey) {
  * 
  * @param {string} documentText - Full text of the uploaded document
  * @param {Array} allTheses - Array of thesis objects from the database
- * @param {Object} options - { serperApiKey: string } (optional, for better web results)
  * @returns {Object} Complete plagiarism report
  */
-async function performPlagiarismCheck(documentText, allTheses, options = {}) {
+async function performPlagiarismCheck(documentText, allTheses) {
     const startTime = Date.now();
 
-    // Layer 1: Local corpus check (always runs — free, fast)
-    const localResult = checkLocalSimilarity(documentText, allTheses);
+    // Layer 1: Local corpus check (Lexical Jaccard/TF-IDF & Semantic Embeddings)
+    const localResult = await checkLocalSimilarity(documentText, allTheses);
 
-    // Layer 2: Web check (always runs — DuckDuckGo is free with no API key)
-    const webResult = await checkWebPlagiarism(documentText, options.serperApiKey || '');
+    // Layer 2: Web check (DuckDuckGo Search)
+    const webResult = await checkWebPlagiarism(documentText);
 
-    // Combined overall score: weighted average
-    // Local gets 40% weight, Web gets 60% weight (web is more authoritative)
+    // Combined overall score: weighted average (40% Local + 60% Web)
     const overallScore = Math.round(
         (localResult.percentage * 0.4) + (webResult.percentage * 0.6)
     );
 
-    // Determine verdict
     let verdict;
     if (overallScore >= 50) {
         verdict = 'High Risk — Significant similarity detected';
@@ -491,5 +594,8 @@ module.exports = {
     createShingles,
     jaccardSimilarity,
     containmentSimilarity,
-    extractRepresentativeSentences
+    extractRepresentativeSentences,
+    TfidfVectorizer,
+    cosineSimilarity,
+    getSentenceEmbedding
 };
