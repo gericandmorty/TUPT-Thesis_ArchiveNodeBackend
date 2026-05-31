@@ -13,7 +13,8 @@ const Collaboration = require('../models/Collaboration');
 const router = express.Router();
 const auth = require('../middleware/auth');
 const multer = require('multer');
-const { analyzeDocument, findSimilarity } = require('../modules/documentAnalyzer');
+const { analyzeDocument, findSimilarity, extractText } = require('../modules/documentAnalyzer');
+const { performPlagiarismCheck } = require('../modules/plagiarismChecker');
 const { invalidateSearchCache } = require('../modules/cache');
 
 // Configure Cloudinary
@@ -367,6 +368,48 @@ router.post('/analyze', auth, upload.single('thesis'), async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Error analyzing document',
+            error: err.message
+        });
+    }
+});
+
+// @route   POST /user/plagiarism-check
+// @desc    Run hybrid plagiarism detection (local corpus + web search)
+router.post('/plagiarism-check', auth, upload.single('thesis'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded' });
+        }
+
+        // Extract text from the uploaded document
+        const pages = await extractText(req.file.buffer, req.file.mimetype);
+        const fullText = pages.map(p => p.text).join('\n\n');
+
+        if (fullText.trim().length < 50) {
+            return res.status(400).json({
+                success: false,
+                message: 'Document contains too little text to analyze'
+            });
+        }
+
+        // Fetch all theses for local comparison
+        const allTheses = await Thesis.find({}).select('title abstract id');
+
+        // Run the hybrid plagiarism check
+        const result = await performPlagiarismCheck(fullText, allTheses, {
+            serperApiKey: process.env.SERPER_API_KEY || ''
+        });
+
+        res.json({
+            success: true,
+            ...result
+        });
+
+    } catch (err) {
+        console.error('Plagiarism check error:', err);
+        res.status(500).json({
+            success: false,
+            message: 'Error running plagiarism check',
             error: err.message
         });
     }
