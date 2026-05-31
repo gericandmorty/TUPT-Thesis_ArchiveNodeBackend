@@ -519,5 +519,6 @@ async function findSimilarity(newTitle, newAbstract, allTheses) {
 module.exports = {
     analyzeDocument,
     findSimilarity,
-    calculateSimilarity
+    calculateSimilarity,
+    extractText
 };
