@@ -62,10 +62,24 @@ const thesisSchema = new mongoose.Schema({
     },
     attachments: [{
         type: String // Cloudinary URLs for supporting documents
-    }]
+    }],
+    isRejected: {
+        type: Boolean,
+        default: false
+    },
+    rejectedByRole: {
+        type: String,
+        enum: ['faculty', 'librarian']
+    },
+    deleteAt: {
+        type: Date
+    }
 }, {
     timestamps: true
 });
+
+// TTL Index for auto-deletion of rejected theses
+thesisSchema.index({ deleteAt: 1 }, { expireAfterSeconds: 0 });
 
 // Add text indexes for weighted search
 thesisSchema.index({

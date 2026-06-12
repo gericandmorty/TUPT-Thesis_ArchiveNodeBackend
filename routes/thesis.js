@@ -61,6 +61,43 @@ router.patch('/:id/approve', auth, professorMiddleware, async (req, res) => {
         
         await invalidateSearchCache();
 
+        // Notify student of professor approval
+        if (thesis.createdBy) {
+            try {
+                const Notification = require('../models/Notifcation');
+                const notif = new Notification({
+                    recipient: thesis.createdBy,
+                    sender: req.user,
+                    title: 'Thesis Approved by Faculty',
+                    message: `Your thesis "${thesis.title}" has been approved by Faculty Member ${currentUser.name}.`,
+                    type: 'thesis_approved_prof',
+                    link: '/documents/submissions'
+                });
+                await notif.save();
+            } catch (notifErr) {
+                console.error('Failed to create prof approval notification:', notifErr);
+            }
+        }
+
+        // Notify all Admin/Librarian users that the thesis is ready for review
+        try {
+            const Notification = require('../models/Notifcation');
+            const admins = await User.find({ isAdmin: true });
+            for (const admin of admins) {
+                const notif = new Notification({
+                    recipient: admin._id,
+                    sender: req.user,
+                    title: 'Thesis Pending Librarian Approval',
+                    message: `The thesis "${thesis.title}" has been approved by Faculty Member ${currentUser.name} and is ready for librarian review.`,
+                    type: 'thesis_approved_prof_notify_admin',
+                    link: '/admin/theses'
+                });
+                await notif.save();
+            }
+        } catch (adminNotifErr) {
+            console.error('Failed to notify admins of prof approval:', adminNotifErr);
+        }
+
         res.json({ success: true, message: 'Thesis approved successfully', data: thesis });
     } catch (err) {
         console.error('Approval error:', err);
@@ -88,9 +125,30 @@ router.patch('/:id/disapprove', auth, professorMiddleware, async (req, res) => {
         thesis.isProfApproved = false;
         thesis.approvedBy = null;
         thesis.approvedAt = null;
+        thesis.isRejected = true;
+        thesis.rejectedByRole = 'faculty';
+        thesis.deleteAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days from now
         await thesis.save();
         
         await invalidateSearchCache();
+
+        // Notify student of professor disapproval
+        if (thesis.createdBy) {
+            try {
+                const Notification = require('../models/Notifcation');
+                const notif = new Notification({
+                    recipient: thesis.createdBy,
+                    sender: req.user,
+                    title: 'Thesis Rejected by Faculty',
+                    message: `Your thesis "${thesis.title}" has been rejected by Faculty Member ${currentUser.name} and will be auto-deleted in 5 days if not resubmitted.`,
+                    type: 'thesis_rejected_prof',
+                    link: '/documents/submissions'
+                });
+                await notif.save();
+            } catch (notifErr) {
+                console.error('Failed to create prof disapproval notification:', notifErr);
+            }
+        }
 
         res.json({ success: true, message: 'Thesis disapproved successfully', data: thesis });
     } catch (err) {

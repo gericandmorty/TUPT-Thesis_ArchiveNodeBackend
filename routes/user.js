@@ -50,8 +50,8 @@ const submissionStorage = new CloudinaryStorage({
     cloudinary: cloudinary,
     params: {
         folder: `${process.env.CLOUDINARY_FOLDER_NAME}/submissions`,
-        allowed_formats: ['jpg', 'png', 'jpeg', 'pdf'],
-        transformation: [{ width: 1200, height: 1200, crop: 'limit' }]
+        resource_type: 'auto',
+        allowed_formats: ['jpg', 'png', 'jpeg', 'pdf']
     }
 });
 
@@ -87,6 +87,25 @@ router.post('/theses', auth, submissionUpload.array('attachments', 5), async (re
 
         const thesis = await newThesis.save();
         await invalidateSearchCache();
+
+        // Create notification for professor
+        if (professorId) {
+            try {
+                const Notification = require('../models/Notifcation');
+                const senderUser = await User.findById(req.user);
+                const notif = new Notification({
+                    recipient: professorId,
+                    sender: req.user,
+                    title: 'New Thesis Assignment',
+                    message: `${senderUser ? senderUser.name : 'A student'} has assigned you as the approver for the thesis "${title}".`,
+                    type: 'thesis_assigned',
+                    link: '/approvals'
+                });
+                await notif.save();
+            } catch (notifErr) {
+                console.error('Failed to create professor notification:', notifErr);
+            }
+        }
 
         res.status(201).json({ success: true, data: thesis });
     } catch (err) {
@@ -131,6 +150,10 @@ router.put('/theses/:id', auth, async (req, res) => {
         
         // Reset approval status on edit to require re-review
         thesis.isApproved = false;
+        thesis.isProfApproved = false;
+        thesis.isRejected = false;
+        thesis.rejectedByRole = undefined;
+        thesis.deleteAt = undefined;
 
         await thesis.save();
         
