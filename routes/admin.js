@@ -397,11 +397,11 @@ router.patch('/theses/:id/approve', async (req, res) => {
         
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
         
-        // Enforce Multi-Step Approval: Must be approved by Professor first
+        // Enforce Multi-Step Approval: Must be approved by Faculty first
         if (!thesis.isProfApproved) {
             return res.status(400).json({ 
                 success: false, 
-                message: 'This document cannot be approved by the Admin yet. It must first be approved by the assigned Professor.' 
+                message: 'This document cannot be approved by the Admin yet. It must first be approved by the assigned Faculty.' 
             });
         }
 
@@ -409,6 +409,24 @@ router.patch('/theses/:id/approve', async (req, res) => {
         await thesis.save();
         
         await invalidateSearchCache();
+
+        // Notify student of Librarian/Admin approval
+        if (thesis.createdBy) {
+            try {
+                const Notification = require('../models/Notifcation');
+                const notif = new Notification({
+                    recipient: thesis.createdBy,
+                    sender: req.user,
+                    title: 'Thesis Approved by Librarian',
+                    message: `Your thesis "${thesis.title}" has been approved by the Librarian and is now cataloged in the repository.`,
+                    type: 'thesis_approved_lib',
+                    link: '/documents/submissions'
+                  });
+                  await notif.save();
+              } catch (notifErr) {
+                  console.error('Failed to create lib approval notification:', notifErr);
+              }
+          }
 
         res.json({ success: true, message: 'Thesis approved successfully and cataloged in the repository.', data: thesis });
     } catch (err) {
@@ -420,15 +438,34 @@ router.patch('/theses/:id/approve', async (req, res) => {
 // @desc    Disapprove a thesis
 router.patch('/theses/:id/disapprove', async (req, res) => {
     try {
-        const thesis = await Thesis.findByIdAndUpdate(
-            req.params.id, 
-            { isApproved: false }, 
-            { new: true }
-        );
-        
+        const thesis = await Thesis.findById(req.params.id);
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
+
+        thesis.isApproved = false;
+        thesis.isRejected = true;
+        thesis.rejectedByRole = 'librarian';
+        thesis.deleteAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days from now
+        await thesis.save();
         
         await invalidateSearchCache();
+
+        // Notify student of Librarian/Admin disapproval
+        if (thesis.createdBy) {
+            try {
+                const Notification = require('../models/Notifcation');
+                const notif = new Notification({
+                    recipient: thesis.createdBy,
+                    sender: req.user,
+                    title: 'Thesis Rejected by Librarian',
+                    message: `Your thesis "${thesis.title}" has been rejected/disapproved by the Librarian and will be auto-deleted in 5 days if not resubmitted.`,
+                    type: 'thesis_rejected_lib',
+                    link: '/documents/submissions'
+                });
+                await notif.save();
+            } catch (notifErr) {
+                console.error('Failed to create lib disapproval notification:', notifErr);
+            }
+        }
 
         res.json({ success: true, message: 'Thesis disapproved successfully', data: thesis });
     } catch (err) {

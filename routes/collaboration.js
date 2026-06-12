@@ -119,13 +119,34 @@ router.patch('/:id/admin-status', auth, admin, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid status' });
         }
 
-        const request = await Collaboration.findById(req.params.id);
+        const request = await Collaboration.findById(req.params.id).populate('thesis');
         if (!request) {
             return res.status(404).json({ success: false, message: 'Collaboration request not found' });
         }
 
         request.adminStatus = status;
         await request.save();
+
+        // Notify the alumni (undergrad in DB schema) when admin approves the request
+        if (status === 'approved') {
+            try {
+                const User = require('../models/User');
+                const Notification = require('../models/Notifcation');
+                const senderUser = await User.findById(request.alumni);
+                
+                const notif = new Notification({
+                    recipient: request.undergrad,
+                    sender: request.alumni,
+                    title: 'New Collaboration Request',
+                    message: `${senderUser ? senderUser.name : 'A student'} has requested to collaborate on the thesis "${request.thesis ? request.thesis.title : 'your thesis'}".`,
+                    type: 'collaboration_request',
+                    link: '/collaboration'
+                });
+                await notif.save();
+            } catch (notifErr) {
+                console.error('Failed to create collaboration request notification:', notifErr);
+            }
+        }
 
         res.json({ success: true, data: request });
     } catch (err) {
