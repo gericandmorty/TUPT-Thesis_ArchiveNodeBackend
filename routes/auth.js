@@ -3,10 +3,20 @@ const router = express.Router();
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 
+const SECRET_QUESTIONS = [
+    "What was the name of your first pet?",
+    "What is your mother's maiden name?",
+    "What was the name of your elementary school?",
+    "What city were you born in?",
+    "What is your oldest sibling's middle name?",
+    "What was the make of your first car?",
+    "What is the name of the street you grew up on?"
+];
+
 // Register
 router.post('/register', async (req, res) => {
     try {
-        const { name, idNumber, birthdate, password, isGraduate, isProfessor } = req.body;
+        const { name, idNumber, birthdate, password, isGraduate, isProfessor, secretQuestion, secretAnswer } = req.body;
 
         // Check if user exists
         const existingUser = await User.findOne({ idNumber });
@@ -18,10 +28,12 @@ router.post('/register', async (req, res) => {
         const user = new User({
             name,
             idNumber,
-            birthdate,
+            birthdate: birthdate || null,
             password,
             isGraduate: isGraduate || false,
-            isProfessor: isProfessor || false
+            isProfessor: isProfessor || false,
+            secretQuestion: secretQuestion || null,
+            secretAnswer: secretAnswer || null
         });
 
         await user.save();
@@ -40,7 +52,8 @@ router.post('/register', async (req, res) => {
                 isAdmin: user.isAdmin,
                 isGraduate: user.isGraduate,
                 isProfessor: user.isProfessor,
-                profilePhoto: user.profilePhoto
+                profilePhoto: user.profilePhoto,
+                secretQuestion: user.secretQuestion
             }
         });
 
@@ -80,7 +93,8 @@ router.post('/login', async (req, res) => {
                 isAdmin: user.isAdmin,
                 isGraduate: user.isGraduate,
                 isProfessor: user.isProfessor,
-                profilePhoto: user.profilePhoto
+                profilePhoto: user.profilePhoto,
+                secretQuestion: user.secretQuestion
             }
         });
 
@@ -134,13 +148,13 @@ router.post('/admin/login', async (req, res) => {
     }
 });
 
-// Forgot Password (Reset using Birthdate)
+// Forgot Password — supports both birthdate and secret question verification
 router.post('/forgot-password', async (req, res) => {
     try {
-        const { idNumber, birthdate, newPassword } = req.body;
+        const { idNumber, newPassword, verificationMethod, birthdate, secretAnswer } = req.body;
 
-        if (!idNumber || !birthdate || !newPassword) {
-            return res.status(400).json({ message: 'ID Number, birthdate, and new password are required' });
+        if (!idNumber || !newPassword || !verificationMethod) {
+            return res.status(400).json({ message: 'ID Number, new password, and verification method are required' });
         }
 
         // Find user
@@ -149,12 +163,37 @@ router.post('/forgot-password', async (req, res) => {
             return res.status(400).json({ message: 'User not found' });
         }
 
-        // Verify birthdate (Compare date part only)
-        const storedDate = new Date(user.birthdate).toISOString().split('T')[0];
-        const providedDate = new Date(birthdate).toISOString().split('T')[0];
+        if (verificationMethod === 'birthdate') {
+            if (!birthdate) {
+                return res.status(400).json({ message: 'Birthdate is required for this verification method' });
+            }
+            if (!user.birthdate) {
+                return res.status(400).json({ message: 'No birthdate registered on this account. Try using your secret question instead.' });
+            }
+            const storedDate = new Date(user.birthdate).toISOString().split('T')[0];
+            const providedDate = new Date(birthdate).toISOString().split('T')[0];
+            if (storedDate !== providedDate) {
+                return res.status(400).json({ message: 'Birthdate does not match our records' });
+            }
 
-        if (storedDate !== providedDate) {
-            return res.status(400).json({ message: 'Invalid birthdate verification' });
+        } else if (verificationMethod === 'secretQuestion') {
+            if (!secretAnswer) {
+                return res.status(400).json({ message: 'Secret answer is required for this verification method' });
+            }
+            if (!user.secretQuestion || !user.secretAnswer) {
+                return res.status(400).json({ message: 'No secret question registered on this account. Try using your birthdate instead.' });
+            }
+            const isMatch = await user.compareSecretAnswer(secretAnswer);
+            if (!isMatch) {
+                return res.status(400).json({ message: 'Secret answer does not match our records' });
+            }
+
+        } else {
+            return res.status(400).json({ message: 'Invalid verification method. Use "birthdate" or "secretQuestion".' });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({ message: 'Password must be at least 6 characters long' });
         }
 
         // Update password (pre-save hook will hash it)
@@ -168,9 +207,14 @@ router.post('/forgot-password', async (req, res) => {
     }
 });
 
+// Get available secret questions list
+router.get('/secret-questions', (req, res) => {
+    res.json({ questions: SECRET_QUESTIONS });
+});
+
 // Logout
 router.post('/logout', (req, res) => {
     res.json({ message: 'Logged out successfully' });
 });
 
-module.exports = router;
+module.exports = router;

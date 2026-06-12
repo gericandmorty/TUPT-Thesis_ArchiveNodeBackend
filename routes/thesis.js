@@ -746,4 +746,229 @@ router.post('/compare-local', auth, async (req, res) => {
     }
 });
 
+const DEPARTMENTS = [
+    'BENG', 'BET', 'BETEM', 'BETICT', 'BETMC', 'BETMT', 'BETNT',
+    'BSCE', 'BSECE', 'BSEE', 'BSES', 'BSIT', 'BSME',
+    'BTAU', 'BTTE', 'BTVED', 'BTVTED'
+];
+
+const parseAbstractFromTxt = (rawText) => {
+    const normalized = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const rawSentences = normalized
+        .split(/(?<=[.!?])\s+|\n+/)
+        .map(s => s.trim())
+        .filter(s => s.length >= 10);
+
+    const seen = new Set();
+    const unique = rawSentences.filter(s => {
+        const key = s.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+
+    const boilerplate = [
+        /^abstract[:\s]*/i,
+        /^keywords?[:\s]*/i,
+        /^introduction[:\s]*/i,
+        /^chapter\s+\d+/i,
+        /^(\d+\.?\s*)+$/,
+        /^page\s+\d+$/i,
+    ];
+    const cleaned = unique.filter(s =>
+        !boilerplate.some(pattern => pattern.test(s.trim()))
+    );
+
+    return cleaned.join(' ');
+};
+
+const dissectThesisTxt = (rawText) => {
+    const normalized = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = normalized.split('\n').map(l => l.trim());
+    
+    let title = '';
+    let author = '';
+    let year_range = '';
+    let course = '';
+    let abstract = '';
+
+    const isHeader = (line) => {
+        return /^(abstract|keywords?|introduction|acknowledgements|chapter|table of contents|references)/i.test(line);
+    };
+
+    let abstractStartIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (/^\s*abstract\s*$/i.test(lines[i]) || /^abstract\s*[:\-—]/i.test(lines[i])) {
+            abstractStartIndex = i;
+            break;
+        }
+    }
+
+    if (abstractStartIndex === -1) {
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].toLowerCase().includes('abstract')) {
+                abstractStartIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (abstractStartIndex === -1) {
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].length > 120 && !isHeader(lines[i]) && !lines[i].includes('University') && !lines[i].includes('TUP')) {
+                abstractStartIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (abstractStartIndex !== -1) {
+        const abstractLines = [];
+        let currentLine = lines[abstractStartIndex];
+        const headerMatch = currentLine.match(/^abstract\s*[:\-—]\s*(.*)/i);
+        if (headerMatch && headerMatch[1]) {
+            abstractLines.push(headerMatch[1]);
+        } else if (abstractStartIndex !== -1 && !/^\s*abstract\s*$/i.test(currentLine)) {
+            abstractLines.push(currentLine);
+        }
+        
+        for (let i = abstractStartIndex + 1; i < lines.length; i++) {
+            const line = lines[i];
+            if (line === '') continue;
+            if (/^(keywords?|introduction|acknowledgements|chapter|table of contents|references|index|background|objectives)/i.test(line)) {
+                break;
+            }
+            abstractLines.push(line);
+        }
+        abstract = parseAbstractFromTxt(abstractLines.join('\n'));
+    }
+
+    const limit = (abstractStartIndex !== -1 && abstractStartIndex > 0) ? abstractStartIndex : Math.min(lines.length, 15);
+    const headerLines = lines.slice(0, limit).filter(l => l !== '');
+
+    for (const line of lines) {
+        const upperLine = line.toUpperCase();
+        for (const dept of DEPARTMENTS) {
+            const regex = new RegExp('\\b' + dept + '\\b', 'i');
+            if (regex.test(upperLine)) {
+                course = dept;
+                break;
+            }
+        }
+        if (course) break;
+    }
+
+    if (!course) {
+        const textUpper = rawText.toUpperCase();
+        if (textUpper.includes('INFORMATION TECHNOLOGY') || textUpper.includes('INFO TECH')) {
+            course = 'BSIT';
+        } else if (textUpper.includes('CIVIL ENGINEERING')) {
+            course = 'BSCE';
+        } else if (textUpper.includes('ELECTRONICS ENGINEERING') || textUpper.includes('ECE')) {
+            course = 'BSECE';
+        } else if (textUpper.includes('ELECTRICAL ENGINEERING') || textUpper.includes('BSEE')) {
+            course = 'BSEE';
+        } else if (textUpper.includes('MECHANICAL ENGINEERING') || textUpper.includes('BSME')) {
+            course = 'BSME';
+        }
+    }
+
+    for (const line of lines) {
+        const rangeMatch = line.match(/\b(20\d{2}-\d{4})\b/);
+        if (rangeMatch) {
+            year_range = rangeMatch[1];
+            break;
+        }
+        const singleMatch = line.match(/\b(20\d{2})\b/);
+        if (singleMatch) {
+            year_range = singleMatch[1];
+        }
+    }
+    if (!year_range) {
+        year_range = new Date().getFullYear().toString();
+    }
+
+    let authorLineIdx = -1;
+    for (let i = 0; i < headerLines.length; i++) {
+        const line = headerLines[i];
+        const authorMatch = line.match(/^(author|authors|prepared by|submitted by|by|researcher|researchers|principal author)[:\s]+(.*)/i);
+        if (authorMatch) {
+            authorLineIdx = i;
+            author = authorMatch[2].trim();
+            break;
+        } else if (/^(author|authors|prepared by|submitted by|by|researcher|researchers|principal author)\s*$/i.test(line)) {
+            authorLineIdx = i;
+            for (let j = i + 1; j < Math.min(headerLines.length, i + 4); j++) {
+                if (headerLines[j] && !headerLines[j].includes(year_range) && !(course && headerLines[j].includes(course))) {
+                    author = headerLines[j];
+                    break;
+                }
+            }
+            break;
+        }
+    }
+
+    if (!author) {
+        const nameRegex = /^[A-Z][a-zA-Z\'-]+(,\s+[A-Z][a-zA-Z\'-]+(\s+[A-Z]\.?)?|\s+[A-Z][a-zA-Z\'-]+){1,3}$/;
+        for (let i = 0; i < headerLines.length; i++) {
+            const line = headerLines[i];
+            if (line.includes(year_range) || (course && line.includes(course))) continue;
+            if (/^(university|college|department|technological university|manila|taguig|tup|tupt|faculty|campus|course|title|year|subject)/i.test(line)) continue;
+            if (nameRegex.test(line)) {
+                author = line;
+                authorLineIdx = i;
+                break;
+            }
+        }
+    }
+
+    const titleCandidates = [];
+    for (let i = 0; i < headerLines.length; i++) {
+        const line = headerLines[i];
+        if (i === authorLineIdx || line === author || line.includes(author)) continue;
+        if (line.includes(year_range) || (course && line.includes(course))) continue;
+        if (/^(university|college|department|technological university|manila|taguig|tup|tupt|faculty|campus|course|year|by|author)/i.test(line)) continue;
+        if (isHeader(line)) break;
+        titleCandidates.push(line);
+    }
+
+    if (titleCandidates.length > 0) {
+        title = titleCandidates.slice(0, Math.min(titleCandidates.length, 3)).join(' ');
+    }
+
+    if (!title && lines.length > 0) {
+        for (const line of lines) {
+            if (line !== '' && !line.includes(year_range) && !(course && line.includes(course)) && !/^(university|college|department|technological university|manila|taguig|tup|tupt|faculty|campus|course|year|by|author)/i.test(line)) {
+                title = line;
+                break;
+            }
+        }
+    }
+
+    return {
+        title: title.trim(),
+        author: author.trim(),
+        year_range: year_range.trim(),
+        course: course.trim(),
+        abstract: abstract.trim()
+    };
+};
+
+// @route   POST /thesis/parse-txt
+// @desc    Dissect and extract metadata fields from raw thesis text
+router.post('/parse-txt', auth, (req, res) => {
+    try {
+        const { text } = req.body;
+        if (!text) {
+            return res.status(400).json({ success: false, message: 'No text content provided for parsing' });
+        }
+        
+        const parsedData = dissectThesisTxt(text);
+        res.json({ success: true, data: parsedData });
+    } catch (err) {
+        console.error('Parse TXT route error:', err);
+        res.status(500).json({ success: false, message: 'Error parsing thesis text', error: err.message });
+    }
+});
+
 module.exports = router;

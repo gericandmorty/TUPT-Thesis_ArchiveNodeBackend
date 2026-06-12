@@ -17,14 +17,14 @@ const userSchema = new mongoose.Schema({
     },
     birthdate: {
         type: Date,
-        required: [true, 'Birthdate is required'],
+        required: false,
         validate: {
             validator: function (value) {
-                // Must be at least 18 years old
+                // Only validate if birthdate is provided
+                if (!value) return true;
                 const today = new Date();
                 const minAgeDate = new Date();
                 minAgeDate.setFullYear(today.getFullYear() - 18);
-                // Allow today's leeway for timezones
                 return value <= minAgeDate;
             },
             message: 'You must be at least 18 years old to register'
@@ -34,6 +34,14 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: [true, 'Password is required'],
         minlength: [6, 'Password must be at least 6 characters long']
+    },
+    secretQuestion: {
+        type: String,
+        default: null
+    },
+    secretAnswer: {
+        type: String,
+        default: null
     },
     isAdmin: {
         type: Boolean,
@@ -52,19 +60,25 @@ const userSchema = new mongoose.Schema({
         default: null
     }
 }, {
-    timestamps: true // Adds createdAt and updatedAt automatically
+    timestamps: true
 });
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {
-    // Only hash the password if it's modified (or new)
-    if (!this.isModified('password')) return next();
+    if (!this.isModified('password') && !this.isModified('secretAnswer')) return next();
 
     try {
-        // Generate salt
         const salt = await bcrypt.genSalt(12);
-        // Hash password
-        this.password = await bcrypt.hash(this.password, salt);
+
+        if (this.isModified('password')) {
+            this.password = await bcrypt.hash(this.password, salt);
+        }
+
+        // Hash secret answer if it was modified and is non-null
+        if (this.isModified('secretAnswer') && this.secretAnswer) {
+            this.secretAnswer = await bcrypt.hash(this.secretAnswer, salt);
+        }
+
         next();
     } catch (error) {
         next(error);
@@ -80,27 +94,22 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
     }
 };
 
-// Virtual for age calculation
-userSchema.virtual('age').get(function () {
-    if (!this.birthdate) return null;
-
-    const today = new Date();
-    const birthDate = new Date(this.birthdate);
-    let age = today.getFullYear() - birthDate.getFullYear();
-
-    const monthDiff = today.getMonth() - birthDate.getMonth();
-    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-        age--;
+// Compare secret answer method
+userSchema.methods.compareSecretAnswer = async function (candidateAnswer) {
+    try {
+        if (!this.secretAnswer) return false;
+        return await bcrypt.compare(candidateAnswer, this.secretAnswer);
+    } catch (error) {
+        throw new Error('Secret answer comparison failed');
     }
+};
 
-    return age;
-});
-
-// Transform output to include virtuals and remove password
+// Transform output to include virtuals and remove sensitive fields
 userSchema.set('toJSON', {
     virtuals: true,
     transform: function (doc, ret) {
         delete ret.password;
+        delete ret.secretAnswer;
         delete ret.__v;
         return ret;
     }
