@@ -207,6 +207,23 @@ router.post('/forgot-password', async (req, res) => {
     }
 });
 
+// Get user's secret question by ID Number
+router.get('/secret-question/:idNumber', async (req, res) => {
+    try {
+        const { idNumber } = req.params;
+        const user = await User.findOne({ idNumber });
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        if (!user.secretQuestion) {
+            return res.status(400).json({ message: 'No secret question registered for this account' });
+        }
+        res.json({ secretQuestion: user.secretQuestion });
+    } catch (error) {
+        res.status(500).json({ message: 'Error retrieving secret question', error: error.message });
+    }
+});
+
 // Get available secret questions list
 router.get('/secret-questions', (req, res) => {
     res.json({ questions: SECRET_QUESTIONS });
