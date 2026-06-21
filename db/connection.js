@@ -11,6 +11,20 @@ const connectDB = async () => {
         console.log(`📊 Database: ${conn.connection.name}`);
         console.log(`🎯 Host: ${conn.connection.host}`);
         
+        // Migrate existing users to isApproved: true if not set
+        try {
+            const User = require('../models/User');
+            const result = await User.updateMany(
+                { isApproved: { $exists: false } },
+                { $set: { isApproved: true } }
+            );
+            if (result.modifiedCount > 0) {
+                console.log(`Migrated ${result.modifiedCount} existing users to isApproved: true`);
+            }
+        } catch (migrationError) {
+            console.error('⚠️ Database migration failed:', migrationError.message);
+        }
+        
         return conn;
     } catch (error) {
         console.error('❌ Database connection failed:', error.message);
