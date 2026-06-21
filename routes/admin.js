@@ -24,12 +24,13 @@ router.use(auth, admin);
 // @desc    Get dashboard statistics
 router.get('/stats', async (req, res) => {
     try {
-        const [userCount, thesisCount, pendingCount, graduatedCount, collaborationCount] = await Promise.all([
+        const [userCount, thesisCount, pendingCount, graduatedCount, collaborationCount, adminCount] = await Promise.all([
             User.countDocuments(),
             Thesis.countDocuments(),
             Thesis.countDocuments({ isApproved: false }),
             User.countDocuments({ isGraduate: true }),
-            Collaboration.countDocuments()
+            Collaboration.countDocuments(),
+            User.countDocuments({ isAdmin: true })
         ]);
 
         // Fetch monthly data for the last 6 months
@@ -100,6 +101,7 @@ router.get('/stats', async (req, res) => {
                 pending: pendingCount,
                 graduated: graduatedCount,
                 collaborations: collaborationCount,
+                admins: adminCount,
                 students: userCount - graduatedCount,
                 chartData
             }
