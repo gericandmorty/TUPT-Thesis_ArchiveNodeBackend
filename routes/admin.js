@@ -204,7 +204,7 @@ router.get('/theses', async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 10;
         const skip = (page - 1) * limit;
-        
+
         const query = {};
 
         // Search logic
@@ -245,7 +245,7 @@ router.get('/theses', async (req, res) => {
         } else if (status === 'approved') {
             query.isApproved = true;
         }
- 
+
         // Sort logic
         let sortOption = { createdAt: -1 };
         if (sort === 'oldest') sortOption = { createdAt: 1 };
@@ -314,7 +314,7 @@ router.post('/theses', async (req, res) => {
     try {
         const thesis = new Thesis(req.body);
         await thesis.save();
-        
+
         await invalidateSearchCache();
 
         res.status(201).json({ success: true, message: 'Thesis created successfully', data: thesis });
@@ -332,7 +332,7 @@ router.put('/theses/:id', async (req, res) => {
     try {
         const thesis = await Thesis.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
-        
+
         await invalidateSearchCache();
 
         res.json({ success: true, message: 'Thesis updated successfully', data: thesis });
@@ -357,12 +357,12 @@ router.delete('/theses/:id', async (req, res) => {
                     const parts = url.split('/');
                     const filenameWithExt = parts[parts.length - 1];
                     const publicIdWithoutExt = filenameWithExt.split('.')[0];
-                    
+
                     // The folder path is also part of the public_id if used
                     // For this project, they are in folder/public_id
                     const folderName = parts[parts.length - 2];
                     const fullPublicId = `${process.env.CLOUDINARY_FOLDER_NAME}/submissions/${publicIdWithoutExt}`;
-                    
+
                     return cloudinary.uploader.destroy(fullPublicId);
                 });
                 await Promise.all(deletePromises);
@@ -374,13 +374,13 @@ router.delete('/theses/:id', async (req, res) => {
 
         // Now delete from DB
         await Thesis.findByIdAndDelete(req.params.id);
-        
+
         // Cascade delete: Remove associated collaborations and session history
         await Promise.all([
             Collaboration.deleteMany({ thesis: req.params.id }),
             SessionHistory.deleteMany({ thesis: req.params.id })
         ]);
-        
+
         await invalidateSearchCache();
 
         res.json({ success: true, message: 'Thesis and associated attachments deleted successfully' });
@@ -394,41 +394,58 @@ router.delete('/theses/:id', async (req, res) => {
 router.patch('/theses/:id/approve', async (req, res) => {
     try {
         const thesis = await Thesis.findById(req.params.id);
-        
+
         if (!thesis) return res.status(404).json({ success: false, message: 'Thesis not found' });
-        
+
         // Enforce Multi-Step Approval: Must be approved by Faculty first
         if (!thesis.isProfApproved) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'This document cannot be approved by the Admin yet. It must first be approved by the assigned Faculty.' 
+            return res.status(400).json({
+                success: false,
+                message: 'This document cannot be approved by the Admin yet. It must first be approved by the assigned Faculty.'
             });
         }
 
         thesis.isApproved = true;
         await thesis.save();
-        
+
         await invalidateSearchCache();
 
-        // Notify student of Librarian/Admin approval
+        // === AUTO-PROMOTE STUDENT TO ALUMNI ===
+        // When both faculty (isProfApproved) and librarian (isApproved) have approved,
+        // the thesis creator is promoted to alumni so they can receive collaboration requests.
+        if (thesis.createdBy) {
+            try {
+                const creator = await User.findById(thesis.createdBy);
+                if (creator && !creator.isGraduate && !creator.isProfessor && !creator.isAdmin) {
+                    creator.isGraduate = true;
+                    await creator.save();
+                    console.log(`User ${creator.name} (${creator._id}) promoted to Alumni after full thesis approval.`);
+                }
+            } catch (promoteErr) {
+                console.error('Failed to promote user to alumni:', promoteErr);
+            }
+        }
+
+        // Notify student of Librarian/Admin approval + alumni promotion
         if (thesis.createdBy) {
             try {
                 const Notification = require('../models/Notifcation');
                 const notif = new Notification({
                     recipient: thesis.createdBy,
                     sender: req.user,
-                    title: 'Thesis Approved by Librarian',
-                    message: `Your thesis "${thesis.title}" has been approved by the Librarian and is now cataloged in the repository.`,
+                    title: '🎓 Thesis Fully Approved — Welcome, Alumni!',
+                    message: `Congratulations! Your thesis "${thesis.title}" has been approved by both the Faculty and the Librarian. Your account has been upgraded to Alumni status. You can now receive collaboration requests from students.`,
                     type: 'thesis_approved_lib',
                     link: '/documents/submissions'
-                  });
-                  await notif.save();
-              } catch (notifErr) {
-                  console.error('Failed to create lib approval notification:', notifErr);
-              }
-          }
+                });
+                await notif.save();
+            } catch (notifErr) {
+                console.error('Failed to create lib approval notification:', notifErr);
+            }
+        }
 
         res.json({ success: true, message: 'Thesis approved successfully and cataloged in the repository.', data: thesis });
+
     } catch (err) {
         res.status(500).json({ success: false, message: 'Error approving thesis', error: err.message });
     }
@@ -446,7 +463,7 @@ router.patch('/theses/:id/disapprove', async (req, res) => {
         thesis.rejectedByRole = 'librarian';
         thesis.deleteAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000); // 5 days from now
         await thesis.save();
-        
+
         await invalidateSearchCache();
 
         // Notify student of Librarian/Admin disapproval

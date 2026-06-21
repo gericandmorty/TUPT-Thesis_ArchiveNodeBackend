@@ -58,6 +58,14 @@ const userSchema = new mongoose.Schema({
     profilePhoto: {
         type: String,
         default: null
+    },
+    isApproved: {
+        type: Boolean,
+        default: false
+    },
+    expoPushToken: {
+        type: String,
+        default: null
     }
 }, {
     timestamps: true

@@ -30,6 +30,11 @@ const collaborationSchema = new mongoose.Schema({
         type: String,
         required: true,
         trim: true
+    },
+    followUpMessage: {
+        type: String,
+        default: null,
+        trim: true
     }
 }, {
     timestamps: true

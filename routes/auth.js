@@ -33,7 +33,8 @@ router.post('/register', async (req, res) => {
             isGraduate: isGraduate || false,
             isProfessor: isProfessor || false,
             secretQuestion: secretQuestion || null,
-            secretAnswer: secretAnswer || null
+            secretAnswer: secretAnswer || null,
+            isApproved: req.body.isApproved !== undefined ? req.body.isApproved : false
         });
 
         await user.save();
@@ -77,6 +78,11 @@ router.post('/login', async (req, res) => {
         const isMatch = await user.comparePassword(password);
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid credentials' });
+        }
+
+        // Check approval (admins bypass this check)
+        if (!user.isApproved && !user.isAdmin) {
+            return res.status(403).json({ message: 'Your account is pending admin approval' });
         }
 
         // Create Token

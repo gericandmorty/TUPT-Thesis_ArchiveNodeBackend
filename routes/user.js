@@ -48,17 +48,34 @@ const profileUpload = multer({
 // Cloudinary storage for thesis submissions (supporting documents)
 const submissionStorage = new CloudinaryStorage({
     cloudinary: cloudinary,
-    params: {
-        folder: `${process.env.CLOUDINARY_FOLDER_NAME}/submissions`,
-        resource_type: 'auto',
-        allowed_formats: ['jpg', 'png', 'jpeg', 'pdf']
+    params: async (req, file) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const isRaw = ext === '.docx' || ext === '.doc';
+        return {
+            folder: `${process.env.CLOUDINARY_FOLDER_NAME}/submissions`,
+            resource_type: isRaw ? 'raw' : 'image',
+            public_id: `${path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9-_]/g, '_')}-${Date.now()}${isRaw ? ext : ''}`,
+            allowed_formats: isRaw ? undefined : ['jpg', 'png', 'jpeg']
+        };
     }
 });
 
 const submissionUpload = multer({
     storage: submissionStorage,
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB per file
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
+    fileFilter: (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        const allowed = ['.docx', '.doc', '.jpg', '.jpeg', '.png'];
+        if (ext === '.pdf') {
+            return cb(new Error('PDF files are not allowed. Please upload DOCX or image files only.'));
+        }
+        if (!allowed.includes(ext)) {
+            return cb(new Error(`File type "${ext}" is not allowed. Only DOCX and images (JPG, PNG) are accepted.`));
+        }
+        cb(null, true);
+    }
 });
+
 
 // @route   POST /user/theses
 // @desc    Submit a new thesis with supporting documents
@@ -67,7 +84,7 @@ router.post('/theses', auth, submissionUpload.array('attachments', 5), async (re
         const { title, abstract, author, year_range, course, id, professorId } = req.body;
 
         if (!req.files || req.files.length === 0) {
-            return res.status(400).json({ success: false, message: 'Supporting documents are required (1-5 images/PDFs)' });
+            return res.status(400).json({ success: false, message: 'Supporting documents are required (1-5 DOCX or image files)' });
         }
 
         const attachmentUrls = req.files.map(file => file.path);
@@ -760,6 +777,87 @@ router.delete('/session-history', auth, async (req, res) => {
     } catch (err) {
         console.error('Clear session history error:', err);
         res.status(500).json({ success: false, message: 'Error clearing history', error: err.message });
+    }
+});
+
+// @route   POST /user/push-token
+// @desc    Register Expo push token for the user
+router.post('/push-token', auth, async (req, res) => {
+    try {
+        const { pushToken } = req.body;
+        if (!pushToken) {
+            return res.status(400).json({ success: false, message: 'Push token is required' });
+        }
+
+        const user = await User.findById(req.user);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        user.expoPushToken = pushToken;
+        await user.save();
+
+        res.json({ success: true, message: 'Push token registered successfully' });
+    } catch (err) {
+        console.error('Push token registration error:', err);
+        res.status(500).json({ success: false, message: 'Server error', error: err.message });
+    }
+});
+
+// @route   GET /user/download
+// @desc    Proxy download for Cloudinary raw files (PDF/DOCX) with correct Content-Disposition header
+// @access  Public (secured by Cloudinary hostname validation only – raw URLs are non-guessable)
+router.get('/download', async (req, res) => {
+    const { url } = req.query;
+    if (!url) return res.status(400).json({ success: false, message: 'URL is required' });
+
+    // Only allow downloads from Cloudinary to prevent abuse
+    try {
+        const parsedUrl = new URL(url);
+        if (!parsedUrl.hostname.includes('cloudinary.com')) {
+            return res.status(400).json({ success: false, message: 'Only Cloudinary URLs are allowed' });
+        }
+    } catch {
+        return res.status(400).json({ success: false, message: 'Invalid URL' });
+    }
+
+    try {
+        const https = require('https');
+
+        // Derive filename from the original URL
+        const originalUrlObj = new URL(url);
+        const rawFileName = decodeURIComponent(originalUrlObj.pathname.split('/').pop() || 'document');
+        const ext = rawFileName.split('.').pop().toLowerCase();
+
+        // PDF files are not supported for direct download via proxy (Cloudinary redirects them)
+        if (ext === 'pdf') {
+            return res.status(415).json({ success: false, message: 'PDF files cannot be downloaded directly. Please ask the thesis author for access.' });
+        }
+
+        const safeFileName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+        https.get(url, (fileRes) => {
+            const { statusCode, headers } = fileRes;
+            if (statusCode !== 200) {
+                console.error(`Download proxy: status ${statusCode} for URL: ${url}`);
+                return res.status(502).json({ success: false, message: `Storage returned status ${statusCode}` });
+            }
+            const contentType = headers['content-type'] || 'application/octet-stream';
+            res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
+            res.setHeader('Content-Type', contentType);
+            if (headers['content-length']) {
+                res.setHeader('Content-Length', headers['content-length']);
+            }
+            fileRes.pipe(res);
+        }).on('error', (err) => {
+            console.error('Download proxy fetch error:', err.message);
+            if (!res.headersSent) {
+                res.status(500).json({ success: false, message: 'Failed to download file' });
+            }
+        });
+    } catch (err) {
+        console.error('Download proxy error:', err);
+        res.status(500).json({ success: false, message: 'Server error', error: err.message });
     }
 });
 
