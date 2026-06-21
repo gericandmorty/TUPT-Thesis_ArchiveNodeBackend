@@ -415,17 +415,28 @@ async function analyzeDocument(buffer, mimetype) {
 
         const overallScore = Math.max(0, Math.min(100, Math.round(totalWeightedScore / scoreCount)));
 
+        // Deduplicate recommendations by title and context to prevent duplicate keys in UI and redundancy
+        const uniqueRecs = [];
+        const seenIds = new Set();
+        recommendations.forEach(rec => {
+            const id = rec.id || `${rec.title}-${rec.context}`.replace(/[^a-z0-9]/gi, '-').substring(0, 50);
+            if (!seenIds.has(id)) {
+                seenIds.add(id);
+                uniqueRecs.push({ ...rec, id });
+            }
+        });
+
         // Organize findings into categories for the UI
         const categories = [
-            { name: 'Structure', color: '#f59e0b', issues: recommendations.filter(r => r.category === 'Structure') },
-            { name: 'Grammar & Style', color: '#ef4444', issues: recommendations.filter(r => r.category === 'Grammar & Style') },
-            { name: 'Writing Style', color: '#3b82f6', issues: recommendations.filter(r => r.category === 'Writing Style') },
-            { name: 'Academic Style', color: '#8b5cf6', issues: recommendations.filter(r => r.category === 'Academic Style') }
+            { name: 'Structure', color: '#f59e0b', issues: uniqueRecs.filter(r => r.category === 'Structure') },
+            { name: 'Grammar & Style', color: '#ef4444', issues: uniqueRecs.filter(r => r.category === 'Grammar & Style') },
+            { name: 'Writing Style', color: '#3b82f6', issues: uniqueRecs.filter(r => r.category === 'Writing Style') },
+            { name: 'Academic Style', color: '#8b5cf6', issues: uniqueRecs.filter(r => r.category === 'Academic Style') }
         ];
 
         return {
             overallScore,
-            totalIssues: recommendations.length,
+            totalIssues: uniqueRecs.length,
             statistics: {
                 wordCount: wordCount || 0,
                 sentenceCount: sentenceCount || 0,
@@ -433,7 +444,7 @@ async function analyzeDocument(buffer, mimetype) {
                 readabilityIndex: Math.round(overallFleschKincaid) || 0
             },
             categories,
-            recommendations,
+            recommendations: uniqueRecs,
             pagesText: pages
         };
 

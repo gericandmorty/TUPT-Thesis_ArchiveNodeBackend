@@ -265,7 +265,7 @@ router.get('/profile', auth, async (req, res) => {
 
 router.put('/profile', auth, async (req, res) => {
     try {
-        const { userId, name, birthdate, currentPassword, newPassword } = req.body;
+        const { userId, name, birthdate, currentPassword, newPassword, secretQuestion, secretAnswer } = req.body;
 
         if (!userId) {
             return res.status(400).json({
@@ -297,6 +297,16 @@ router.put('/profile', auth, async (req, res) => {
                 });
             }
             user.birthdate = newBirthdate;
+        }
+
+        // Update secret question if provided
+        if (secretQuestion !== undefined) {
+            user.secretQuestion = secretQuestion;
+        }
+
+        // Update secret answer if provided
+        if (secretAnswer) {
+            user.secretAnswer = secretAnswer;
         }
 
         // Update password if provided

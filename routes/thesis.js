@@ -7,10 +7,18 @@ const auth = require('../middleware/auth');
 const { optionalAuth } = auth;
 const { generateText } = require('../modules/ai');
 const { redis, getSearchCacheVersion, invalidateSearchCache } = require('../modules/cache');
-const { findSimilarity } = require('../modules/documentAnalyzer');
+const { findSimilarity, extractText } = require('../modules/documentAnalyzer');
 const AiHistory = require('../models/AiHistory');
 const Collaboration = require('../models/Collaboration');
 const professorMiddleware = require('../middleware/professor');
+const multer = require('multer');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+// Configure memory storage for parsing files
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 
 // @route   GET /thesis/assigned/count
 // @desc    Get count of theses assigned to the logged-in professor
@@ -945,9 +953,28 @@ const dissectThesisTxt = (rawText) => {
         }
     }
 
+    let formattedAuthor = author.trim();
+    if (formattedAuthor && !formattedAuthor.includes(',') && !formattedAuthor.includes(';')) {
+        // 1. Lowercase followed immediately by Uppercase: "DoeJane" -> "Doe, Jane"
+        formattedAuthor = formattedAuthor.replace(/([a-z\u00C0-\u00FF])([A-Z])/g, '$1, $2');
+        // 2. Period followed by Uppercase: "A.Jane" -> "A., Jane"
+        formattedAuthor = formattedAuthor.replace(/\.([A-Z])/g, '., $1');
+        // 3. Clean up duplicate spacing/commas
+        formattedAuthor = formattedAuthor.replace(/\.,\s+,/g, '.,');
+        formattedAuthor = formattedAuthor.replace(/\s{2,}/g, ' ');
+        // 4. If there are names separated by space but no commas, e.g. "John A. Doe Jane B. Smith"
+        const nameMatches = formattedAuthor.match(/[A-Z][a-zA-Z\u00C0-\u00FF\u00d1\u00f1\'-]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-zA-Z\u00C0-\u00FF\u00d1\u00f1\'-]+/g);
+        if (nameMatches && nameMatches.length > 1) {
+            const matchedString = nameMatches.join(' ');
+            if (formattedAuthor.replace(/,/g, '').replace(/\s+/g, ' ').trim() === matchedString) {
+                formattedAuthor = nameMatches.join(', ');
+            }
+        }
+    }
+
     return {
         title: title.trim(),
-        author: author.trim(),
+        author: formattedAuthor,
         year_range: year_range.trim(),
         course: course.trim(),
         abstract: abstract.trim()
@@ -968,6 +995,116 @@ router.post('/parse-txt', auth, (req, res) => {
     } catch (err) {
         console.error('Parse TXT route error:', err);
         res.status(500).json({ success: false, message: 'Error parsing thesis text', error: err.message });
+    }
+});
+
+// @route   POST /thesis/parse-file
+// @desc    Dissect and extract metadata fields from uploaded PDF, DOCX, or TXT file
+router.post('/parse-file', auth, upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded for parsing' });
+        }
+
+        let fullText = '';
+        try {
+            const pages = await extractText(req.file.buffer, req.file.mimetype);
+            fullText = pages.map(p => p.text).join('\n\n');
+        } catch (parseErr) {
+            console.warn('Local text extraction failed, trying AI fallback:', parseErr.message);
+
+            // If it is a PDF and local parsing fails, let's use Gemini to parse the PDF directly!
+            if (req.file.mimetype === 'application/pdf' && process.env.GEMINI_API_KEY) {
+                try {
+                    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+                    const prompt = `
+                        You are an assistant that extracts metadata from a research paper PDF.
+                        Analyze the uploaded paper and extract:
+                        1. Title: The full title of the paper.
+                        2. Author: The lead author name(s). If there are multiple, separate them with a comma (e.g. Dela Cruz J., Santos M.).
+                        3. Year: The publication or submission year (e.g., 2024-2025 or 2025).
+                        4. Course: The department/course name abbreviation (e.g. BSIT, BSCE, BET, Betem, BETICT, BETMC, BETMT, BETNT, BSECE, BSEE, BSES, BSME, BTAU, BTTE, BTVED, BTVTED).
+                        5. Abstract: The abstract summary of the paper.
+
+                        Return a JSON object strictly in this format:
+                        {
+                            "title": "Extracted Title",
+                            "author": "Author Name(s)",
+                            "year_range": "Year",
+                            "course": "Course",
+                            "abstract": "Abstract text"
+                        }
+                    `;
+
+                    const result = await model.generateContent([
+                        {
+                            inlineData: {
+                                data: req.file.buffer.toString("base64"),
+                                mimeType: "application/pdf"
+                            }
+                        },
+                        prompt
+                    ]);
+
+                    const aiResponse = result.response.text();
+                    const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+                    if (!jsonMatch) {
+                        throw new Error('No JSON object found in AI response');
+                    }
+                    const parsedData = JSON.parse(jsonMatch[0]);
+
+                    // Clean and normalize author names in the AI result
+                    let formattedAuthor = (parsedData.author || '').trim();
+                    if (formattedAuthor && !formattedAuthor.includes(',') && !formattedAuthor.includes(';')) {
+                        formattedAuthor = formattedAuthor.replace(/([a-z\u00C0-\u00FF])([A-Z])/g, '$1, $2');
+                        formattedAuthor = formattedAuthor.replace(/\.([A-Z])/g, '., $1');
+                        formattedAuthor = formattedAuthor.replace(/\.,\s+,/g, '.,');
+                        formattedAuthor = formattedAuthor.replace(/\s{2,}/g, ' ');
+                        const nameMatches = formattedAuthor.match(/[A-Z][a-zA-Z\u00C0-\u00FF\u00d1\u00f1\'-]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-zA-Z\u00C0-\u00FF\u00d1\u00f1\'-]+/g);
+                        if (nameMatches && nameMatches.length > 1) {
+                            const matchedString = nameMatches.join(' ');
+                            if (formattedAuthor.replace(/,/g, '').replace(/\s+/g, ' ').trim() === matchedString) {
+                                formattedAuthor = nameMatches.join(', ');
+                            }
+                        }
+                    }
+                    parsedData.author = formattedAuthor;
+
+                    // Standardize other fields
+                    parsedData.title = (parsedData.title || '').trim();
+                    parsedData.year_range = (parsedData.year_range || '').trim();
+                    parsedData.course = (parsedData.course || '').trim();
+                    parsedData.abstract = (parsedData.abstract || '').trim();
+
+                    return res.json({ success: true, data: parsedData, source: 'ai-fallback' });
+                } catch (aiErr) {
+                    console.error('AI PDF parsing fallback failed:', aiErr);
+                    return res.status(500).json({
+                        success: false,
+                        message: 'PDF parsing failed: The file has a corrupted structure (e.g. bad XRef table) and AI fallback failed.',
+                        error: parseErr.message
+                    });
+                }
+            } else {
+                return res.status(500).json({
+                    success: false,
+                    message: 'Error parsing PDF: The file has a corrupted structure (e.g. bad XRef table). Try converting to DOCX or TXT.',
+                    error: parseErr.message
+                });
+            }
+        }
+
+        if (!fullText.trim()) {
+            return res.status(400).json({ success: false, message: 'Extracted document text is empty' });
+        }
+
+        const parsedData = dissectThesisTxt(fullText);
+        res.json({ success: true, data: parsedData });
+    } catch (err) {
+        console.error('Parse file route error:', err);
+        res.status(500).json({ success: false, message: 'Error parsing document file', error: err.message });
     }
 });
 
