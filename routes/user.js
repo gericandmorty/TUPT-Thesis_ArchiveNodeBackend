@@ -105,16 +105,35 @@ router.post('/theses', auth, submissionUpload.array('attachments', 5), async (re
         const thesis = await newThesis.save();
         await invalidateSearchCache();
 
+        // Check if a thesis with the same title already exists in the database (excluding current thesis, not rejected)
+        const cleanTitle = title.trim().toLowerCase();
+        const escapedTitle = cleanTitle.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const existingThesis = await Thesis.findOne({
+            _id: { $ne: thesis._id },
+            title: { $regex: new RegExp(`^${escapedTitle}$`, 'i') },
+            isRejected: { $ne: true }
+        });
+        const hasDuplicate = !!existingThesis;
+
         // Create notification for professor
         if (professorId) {
             try {
                 const Notification = require('../models/Notifcation');
                 const senderUser = await User.findById(req.user);
+                
+                let notifTitle = 'New Thesis Assignment';
+                let notifMessage = `${senderUser ? senderUser.name : 'A student'} has assigned you as the approver for the thesis "${title}".`;
+                
+                if (hasDuplicate) {
+                    notifTitle = 'Duplicate Title Alert';
+                    notifMessage = `⚠️ Duplicate Title Alert: ${senderUser ? senderUser.name : 'A student'} assigned you to review "${title}", which matches an existing thesis in the database.`;
+                }
+
                 const notif = new Notification({
                     recipient: professorId,
                     sender: req.user,
-                    title: 'New Thesis Assignment',
-                    message: `${senderUser ? senderUser.name : 'A student'} has assigned you as the approver for the thesis "${title}".`,
+                    title: notifTitle,
+                    message: notifMessage,
                     type: 'thesis_assigned',
                     link: '/approvals'
                 });

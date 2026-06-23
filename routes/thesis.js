@@ -37,7 +37,27 @@ router.get('/assigned/count', auth, professorMiddleware, async (req, res) => {
 router.get('/assigned', auth, professorMiddleware, async (req, res) => {
     try {
         const theses = await Thesis.find({ professorId: req.user }).sort({ createdAt: -1 });
-        res.json({ success: true, data: theses });
+        
+        // Enhance theses with duplicate information
+        const enhancedTheses = await Promise.all(theses.map(async (thesis) => {
+            const thesisObj = thesis.toObject();
+            
+            // Escape special regex characters in the title
+            const cleanTitle = thesis.title.trim().toLowerCase();
+            const escapedTitle = cleanTitle.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            
+            const duplicates = await Thesis.find({
+                _id: { $ne: thesis._id },
+                title: { $regex: new RegExp(`^${escapedTitle}$`, 'i') },
+                isRejected: { $ne: true }
+            });
+            
+            thesisObj.duplicates = duplicates;
+            thesisObj.hasDuplicate = duplicates.length > 0;
+            return thesisObj;
+        }));
+
+        res.json({ success: true, data: enhancedTheses });
     } catch (err) {
         console.error('Fetch assigned theses error:', err);
         res.status(500).json({ success: false, message: 'Error fetching assigned theses', error: err.message });
