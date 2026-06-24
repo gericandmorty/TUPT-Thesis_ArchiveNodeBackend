@@ -2,22 +2,24 @@
 
 The robust, AI-powered backend engine for the Technological University of the Philippines Taguig Thesis Archive. This server handles security, document processing, and the intelligent search infrastructure for both web and mobile platforms.
 
-**🔗 Repository:** [https://github.com/gericandmorty/TUPT-Thesis_ArchiveNodeBackend](https://github.com/gericandmorty/TUPT-Thesis_ArchiveNodeBackend)
+**Repository:** [https://github.com/gericandmorty/TUPT-Thesis_ArchiveNodeBackend](https://github.com/gericandmorty/TUPT-Thesis_ArchiveNodeBackend)
 
 ---
 
-## 🛠️ Core Capabilities
+## Core Capabilities
 
-- **AI-Powered Analysis**: Integrated with **Google Gemini AI** for automatic thesis title generation, structural suggestions, and abstract summarization.
-- **Smart Document Processing**: Robust PDF/DOCX parsing (using `pdf-parse` and `mammoth`) to extract metadata instantly upon upload.
-- **Institutional Security**: Secure authentication flow using **JWT** (JSON Web Tokens) and **Bcryptjs** for password hashing.
-- **Semantic Search API**: High-performance search endpoints catering to thousands of indexed research records.
-- **Cloud Media Management**: Integrated with **Cloudinary** for scalable and secure document/image storage.
+- **AI-Powered Analysis**: Integrated with Google Gemini AI for automatic thesis title generation, structural suggestions, and abstract summarization.
+- **Smart Document Processing**: Robust PDF/DOCX parsing (using pdf-parse and mammoth) to extract metadata instantly upon upload.
+- **Institutional Security**: Secure authentication flow using JWT (JSON Web Tokens) and Bcryptjs for password hashing.
+- **Semantic Search API**: High-performance search endpoints catering to indexed research records, utilizing MongoDB text indexes and Redis-based search caching.
+- **Cache Management and Invalidation**: Advanced caching layer with automatic Redis cache invalidation upon downloads, uploads, approvals, or rejections to guarantee data integrity across searches.
+- **Cloud Media Management**: Integrated with Cloudinary for scalable and secure document/image storage.
+- **Secure File Download Proxy**: A dedicated proxy endpoint for Cloudinary files to protect assets, handle content-disposition headers, track downloads, and support redirect fallback for PDF documents.
 - **Role-Based Access Control**: Granular permissions for Students, Faculty, and Admin users.
 
 ---
 
-## 🚀 Technical Stack
+## Technical Stack
 
 - **Runtime**: Node.js (LTS)
 - **Framework**: Express.js
@@ -28,15 +30,15 @@ The robust, AI-powered backend engine for the Technological University of the Ph
 
 ---
 
-## 📋 Prerequisites
+## Prerequisites
 
 - **Node.js**: v18.x or later.
 - **MongoDB**: A local instance or MongoDB Atlas cluster.
-- **Environment Keys**: You will need Gemini AI and Cloudinary API keys.
+- **Environment Keys**: You will need Gemini AI, Redis (Upstash), and Cloudinary API keys.
 
 ---
 
-## ⚙️ Setup Instructions
+## Setup Instructions
 
 ### 1. Clone the Repository
 ```bash
@@ -59,6 +61,7 @@ CLOUDINARY_CLOUD_NAME=your_name
 CLOUDINARY_API_KEY=your_key
 CLOUDINARY_API_SECRET=your_secret
 GEMINI_API_KEY=your_google_ai_key
+REDIS_URL=your_redis_url
 ```
 
 ### 4. Start the Server
@@ -69,20 +72,20 @@ npm run dev
 # Production mode
 npm start
 ```
-The server will be reachable at `http://localhost:5000`.
+The server will be reachable at http://localhost:5000.
 
 ---
 
-## 📂 Architecture Overview
+## Architecture Overview
 
-- `/routes`: Modular API endpoints (Auth, User, Thesis, Admin).
-- `/models`: Mongoose schemas for Users, Theses, and Archives.
-- `/modules`: Core logic engines for AI analysis and document parsing.
+- `/routes`: Modular API endpoints (Auth, User, Thesis, Admin). Includes download counting and secure redirect proxying.
+- `/models`: Mongoose schemas for Users, Theses (including download tracking and text weights), and Archives.
+- `/modules`: Core logic engines for AI analysis, document parsing, and Redis-based caching.
 - `/middleware`: Authentication guards and request validation.
 - `/db`: Database connection configuration.
 
 ---
 
-## 🤝 Institutional Note
+## Institutional Note
 
-This backend project is developed as part of an institutional modernization effort for **TUP Taguig**. Contributions are restricted to authorized project members.
+This backend project is developed as part of an institutional modernization effort for TUP Taguig. Contributions are restricted to authorized project members.
