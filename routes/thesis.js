@@ -5,7 +5,7 @@ const Thesis = require('../models/Thesis');
 const LocalComparison = require('../models/LocalComparison');
 const auth = require('../middleware/auth');
 const { optionalAuth } = auth;
-const { generateText } = require('../modules/ai');
+const { generateText, generateJson, generateJsonFromMultimodal } = require('../modules/ai');
 const { redis, getSearchCacheVersion, invalidateSearchCache } = require('../modules/cache');
 const { findSimilarity, extractText } = require('../modules/documentAnalyzer');
 const AiHistory = require('../models/AiHistory');
@@ -37,7 +37,27 @@ router.get('/assigned/count', auth, professorMiddleware, async (req, res) => {
 router.get('/assigned', auth, professorMiddleware, async (req, res) => {
     try {
         const theses = await Thesis.find({ professorId: req.user }).sort({ createdAt: -1 });
-        res.json({ success: true, data: theses });
+        
+        // Enhance theses with duplicate information
+        const enhancedTheses = await Promise.all(theses.map(async (thesis) => {
+            const thesisObj = thesis.toObject();
+            
+            // Escape special regex characters in the title
+            const cleanTitle = thesis.title.trim().toLowerCase();
+            const escapedTitle = cleanTitle.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            
+            const duplicates = await Thesis.find({
+                _id: { $ne: thesis._id },
+                title: { $regex: new RegExp(`^${escapedTitle}$`, 'i') },
+                isRejected: { $ne: true }
+            });
+            
+            thesisObj.duplicates = duplicates;
+            thesisObj.hasDuplicate = duplicates.length > 0;
+            return thesisObj;
+        }));
+
+        res.json({ success: true, data: enhancedTheses });
     } catch (err) {
         console.error('Fetch assigned theses error:', err);
         res.status(500).json({ success: false, message: 'Error fetching assigned theses', error: err.message });
@@ -310,6 +330,12 @@ router.get('/search', auth, async (req, res) => {
                 filter.title = searchRegex;
             } else if (type === 'abstract') {
                 filter.abstract = searchRegex;
+            } else if (type === 'author') {
+                filter.author = searchRegex;
+            } else if (type === 'year') {
+                filter.year_range = searchRegex;
+            } else if (type === 'course') {
+                filter.course = searchRegex;
             } else {
                 filter.$or = [
                     { title: searchRegex },
@@ -557,12 +583,6 @@ router.post('/recommendations', auth, async (req, res) => {
             Strategic Research Intelligence & Recommendation Report
             Subject Query: "${targetQuery}"
             
-            Functional Requirements:
-            Provide a deep analysis of why this specific query needs refinement. Discuss the necessary academic scope, methodology, and potential contribution to the field. Explain what makes a strong thesis title in this specific area.
-            
-            Conclusion:
-            Provide a authoritative summary of how the research transitions from a general idea to a structured, institutional investigation.
-            
             Recommendations:
             1. "[Polished Thesis Title 1]"
             Rationale: Detail why this title is academically superior and its specific research focus.
@@ -573,9 +593,15 @@ router.post('/recommendations', auth, async (req, res) => {
             3. "[Polished Thesis Title 3]"
             Rationale: Detail why this title is academically superior and its specific research focus.
             
+            Functional Requirements:
+            Provide a deep analysis of why this specific query needs refinement. Discuss the necessary academic scope, methodology, and potential contribution to the field. Explain what makes a strong thesis title in this specific area.
+            
+            Conclusion:
+            Provide a authoritative summary of how the research transitions from a general idea to a structured, institutional investigation.
+            
             CRITICAL FORMATTING RULES:
             - Start EXACTLY with the header: Strategic Research Intelligence & Recommendation Report
-            - Use EXACTLY the headers: Functional Requirements:, Conclusion:, Recommendations:
+            - Use EXACTLY the headers: Recommendations:, Functional Requirements:, Conclusion:
             - DO NOT include square brackets [ ] in your sections.
             - DO NOT wrap headers in asterisks or markdown bolding.
             - Use double newlines between sections.
@@ -1001,6 +1027,23 @@ router.post('/parse-txt', auth, (req, res) => {
 // @route   POST /thesis/parse-file
 // @desc    Dissect and extract metadata fields from uploaded PDF, DOCX, or TXT file
 router.post('/parse-file', auth, upload.single('file'), async (req, res) => {
+    // Helper to safely clean and parse JSON returned from Gemini
+    const safeParseJson = (text) => {
+        try {
+            // Strip markdown block formatting if present
+            let cleanText = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+            // Match the outermost curly braces just in case of surrounding text
+            const match = cleanText.match(/\{[\s\S]*\}/);
+            if (match) {
+                return JSON.parse(match[0]);
+            }
+            return JSON.parse(cleanText);
+        } catch (e) {
+            console.error('JSON parsing error on string:', text);
+            throw new Error('Failed to parse JSON response from Gemini API: ' + e.message);
+        }
+    };
+
     try {
         if (!req.file) {
             return res.status(400).json({ success: false, message: 'No file uploaded for parsing' });
@@ -1014,21 +1057,19 @@ router.post('/parse-file', auth, upload.single('file'), async (req, res) => {
             console.warn('Local text extraction failed, trying AI fallback:', parseErr.message);
 
             // If it is a PDF and local parsing fails, let's use Gemini to parse the PDF directly!
-            if (req.file.mimetype === 'application/pdf' && process.env.GEMINI_API_KEY) {
+            if (req.file.mimetype === 'application/pdf' && (process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY2)) {
                 try {
-                    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
                     const prompt = `
-                        You are an assistant that extracts metadata from a research paper PDF.
+                        You are a highly precise academic document parser that extracts metadata from a research paper PDF.
+                        
                         Analyze the uploaded paper and extract:
-                        1. Title: The full title of the paper.
-                        2. Author: The lead author name(s). If there are multiple, separate them with a comma (e.g. Dela Cruz J., Santos M.).
-                        3. Year: The publication or submission year (e.g., 2024-2025 or 2025).
-                        4. Course: The department/course name abbreviation (e.g. BSIT, BSCE, BET, Betem, BETICT, BETMC, BETMT, BETNT, BSECE, BSEE, BSES, BSME, BTAU, BTTE, BTVED, BTVTED).
-                        5. Abstract: The abstract summary of the paper.
-
-                        Return a JSON object strictly in this format:
+                        1. Title: The clean, full title of the research paper. Remove watermark headers, footer copyright information (e.g., "XXX-X-XXXX-XXXX-X/XX/$XX.00 ©20XX IEEE", "978-1-6654-9550-9/21/$31.00 ©2021 IEEE", etc.), page numbers, or journal names. If the title is in all-caps, convert it to clean Title Case.
+                        2. Author: The name(s) of the author(s). If there are multiple authors, list them separated by a comma (e.g. "Dela Cruz J., Santos M."). Avoid including department details, keywords (such as "Deep Neural", "Decision Tree" are NOT authors), or generic terms.
+                        3. Year: The publication or submission year (e.g. 2021 or 2024-2025).
+                        4. Course: The course or department abbreviation. Match it to one of these options: BENG, BET, BETEM, BETICT, BETMC, BETMT, BETNT, BSCE, BSECE, BSEE, BSES, BSIT, BSME, BTAU, BTTE, BTVED, BTVTED.
+                        5. Abstract: The abstract summary block of the paper.
+                        
+                        Return a JSON object strictly in this format (no markdown code blocks, backticks, or extra commentary):
                         {
                             "title": "Extracted Title",
                             "author": "Author Name(s)",
@@ -1038,22 +1079,15 @@ router.post('/parse-file', auth, upload.single('file'), async (req, res) => {
                         }
                     `;
 
-                    const result = await model.generateContent([
-                        {
-                            inlineData: {
-                                data: req.file.buffer.toString("base64"),
-                                mimeType: "application/pdf"
-                            }
-                        },
-                        prompt
-                    ]);
+                    const inlineFile = {
+                        inlineData: {
+                            data: req.file.buffer.toString("base64"),
+                            mimeType: "application/pdf"
+                        }
+                    };
 
-                    const aiResponse = result.response.text();
-                    const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-                    if (!jsonMatch) {
-                        throw new Error('No JSON object found in AI response');
-                    }
-                    const parsedData = JSON.parse(jsonMatch[0]);
+                    const aiResponse = await generateJsonFromMultimodal(inlineFile, prompt);
+                    const parsedData = safeParseJson(aiResponse);
 
                     // Clean and normalize author names in the AI result
                     let formattedAuthor = (parsedData.author || '').trim();
@@ -1100,11 +1134,130 @@ router.post('/parse-file', auth, upload.single('file'), async (req, res) => {
             return res.status(400).json({ success: false, message: 'Extracted document text is empty' });
         }
 
-        const parsedData = dissectThesisTxt(fullText);
+        let parsedData = null;
+        if (process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY2) {
+            try {
+                const prompt = `
+                    You are a highly precise academic document parser. Analyze the following start text of a research paper and extract its metadata fields.
+                    
+                    Here is the text to analyze:
+                    """
+                    ${fullText.slice(0, 10000)}
+                    """
+                    
+                    Extract these fields with maximum accuracy according to these rules:
+                    
+                    1. Title:
+                       - Extract the actual full title of the research paper.
+                       - Clean it of any watermarks, publication/copyright metadata (e.g., "978-1-6654-9550-9/21/$31.00 ©2021 IEEE", "XXX-X-XXXX-XXXX-X/XX/$XX.00 ©20XX IEEE", "Proceedings of...", "ISSN:...", "DOI:..."), page numbers, or university headers.
+                       - If the title in the text is in all-caps (ALL CAPITAL LETTERS), convert it to clean Title Case (e.g., "Malware Classification Using Deep Learning" instead of "MALWARE CLASSIFICATION USING DEEP LEARNING").
+                       - If the title spans multiple lines, join them cleanly into a single line.
+                    
+                    2. Author:
+                       - Extract only the name(s) of the student(s) / researcher(s) who wrote the paper.
+                       - Format multiple authors separated by commas (e.g., "Dela Cruz J., Santos M." or "John Doe, Jane Smith").
+                       - Crucially clean the authors' names: remove affiliation markers/numbers (like superscripts 1, 2, *), degrees/titles (like Dr., Prof.), email addresses, or department names.
+                       - Do NOT extract technical keywords, section names, or advisor names as authors (e.g. "Deep Neural", "Decision Tree" are research keywords, NOT authors!).
+                    
+                    3. Year:
+                       - Extract the publication year, copyright year, or submission year.
+                       - Must be a 4-digit year (e.g., "2021") or a school year range (e.g., "2024-2025").
+                       - If not explicitly found, guess the most likely year from dates in the text, or leave as "unknown".
+                    
+                    4. Course:
+                       - Assign the department/course abbreviation. It MUST be chosen from this exact list: BENG, BET, BETEM, BETICT, BETMC, BETMT, BETNT, BSCE, BSECE, BSEE, BSES, BSIT, BSME, BTAU, BTTE, BTVED, BTVTED.
+                       - If the course abbreviation is not explicitly written in the text, analyze the title, abstract, and text content to classify it:
+                         * If the paper is about computers, software, web, IT, machine learning, AI, cybersecurity, or networking, select "BSIT".
+                         * If about electronics, semiconductors, signal processing, telecom, select "BSECE".
+                         * If about electrical power, motors, grids, select "BSEE".
+                         * If about mechanical systems, thermodynamics, robotics, select "BSME".
+                         * If about structural design, concrete, roads, select "BSCE".
+                         * If about education, teaching, technology training, select "BTTE" or "BTVED" or "BTVTED".
+                    
+                    5. Abstract:
+                       - Extract the complete abstract text of the paper.
+                       - Keep the exact original text. Do not summarize or rephrase.
+                       - Strip off introductory labels like "Abstract—" or "ABSTRACT".
+                    
+                    Return a JSON object in this format (do not wrap in markdown code blocks or backticks, just raw JSON):
+                    {
+                        "title": "Extracted Title",
+                        "author": "Author Name(s)",
+                        "year_range": "Year",
+                        "course": "Course",
+                        "abstract": "Abstract text"
+                    }
+                `;
+
+                const aiResponse = await generateJson(prompt);
+                parsedData = safeParseJson(aiResponse);
+
+                // Clean and normalize author names in the AI result
+                let formattedAuthor = (parsedData.author || '').trim();
+                if (formattedAuthor && !formattedAuthor.includes(',') && !formattedAuthor.includes(';')) {
+                    formattedAuthor = formattedAuthor.replace(/([a-z\u00C0-\u00FF])([A-Z])/g, '$1, $2');
+                    formattedAuthor = formattedAuthor.replace(/\.([A-Z])/g, '., $1');
+                    formattedAuthor = formattedAuthor.replace(/\.,\s+,/g, '.,');
+                    formattedAuthor = formattedAuthor.replace(/\s{2,}/g, ' ');
+                    const nameMatches = formattedAuthor.match(/[A-Z][a-zA-Z\u00C0-\u00FF\u00d1\u00f1\'-]+(?:\s+[A-Z]\.?)?\s+[A-Z][a-zA-Z\u00C0-\u00FF\u00d1\u00f1\'-]+/g);
+                    if (nameMatches && nameMatches.length > 1) {
+                        const matchedString = nameMatches.join(' ');
+                        if (formattedAuthor.replace(/,/g, '').replace(/\s+/g, ' ').trim() === matchedString) {
+                            formattedAuthor = nameMatches.join(', ');
+                        }
+                    }
+                }
+                parsedData.author = formattedAuthor;
+
+                // Standardize other fields
+                parsedData.title = (parsedData.title || '').trim();
+                parsedData.year_range = (parsedData.year_range || '').trim();
+                parsedData.course = (parsedData.course || '').trim();
+                parsedData.abstract = (parsedData.abstract || '').trim();
+            } catch (aiErr) {
+                console.warn('AI parsing of extracted text failed, falling back to local regex:', aiErr.message);
+            }
+        }
+
+        if (!parsedData) {
+            parsedData = dissectThesisTxt(fullText);
+        }
+
         res.json({ success: true, data: parsedData });
     } catch (err) {
         console.error('Parse file route error:', err);
         res.status(500).json({ success: false, message: 'Error parsing document file', error: err.message });
+    }
+});
+
+// @route   POST /thesis/:id/download
+// @desc    Increment the download count for a thesis
+router.post('/:id/download', optionalAuth, async (req, res) => {
+    try {
+        const thesisId = req.params.id;
+        let thesis;
+
+        // Try searching by MongoDB ObjectId first if valid
+        if (thesisId.match(/^[0-9a-fA-F]{24}$/)) {
+            thesis = await Thesis.findById(thesisId);
+        }
+
+        // If not found or not a valid ObjectId, search by custom id
+        if (!thesis) {
+            thesis = await Thesis.findOne({ id: thesisId });
+        }
+
+        if (!thesis) {
+            return res.status(404).json({ success: false, message: 'Thesis not found' });
+        }
+
+        thesis.downloads = (thesis.downloads || 0) + 1;
+        await thesis.save();
+
+        res.json({ success: true, downloads: thesis.downloads });
+    } catch (err) {
+        console.error('Error incrementing download count:', err);
+        res.status(500).json({ success: false, message: 'Server error incrementing download count', error: err.message });
     }
 });
 
