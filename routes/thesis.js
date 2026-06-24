@@ -330,6 +330,12 @@ router.get('/search', auth, async (req, res) => {
                 filter.title = searchRegex;
             } else if (type === 'abstract') {
                 filter.abstract = searchRegex;
+            } else if (type === 'author') {
+                filter.author = searchRegex;
+            } else if (type === 'year') {
+                filter.year_range = searchRegex;
+            } else if (type === 'course') {
+                filter.course = searchRegex;
             } else {
                 filter.$or = [
                     { title: searchRegex },
