@@ -827,7 +827,7 @@ router.post('/push-token', auth, async (req, res) => {
 // @desc    Proxy download for Cloudinary raw files (PDF/DOCX) with correct Content-Disposition header
 // @access  Public (secured by Cloudinary hostname validation only – raw URLs are non-guessable)
 router.get('/download', async (req, res) => {
-    const { url } = req.query;
+    const { url, noIncrement } = req.query;
     if (!url) return res.status(400).json({ success: false, message: 'URL is required' });
 
     // Only allow downloads from Cloudinary to prevent abuse
@@ -840,14 +840,18 @@ router.get('/download', async (req, res) => {
         return res.status(400).json({ success: false, message: 'Invalid URL' });
     }
 
-    try {
-        const Thesis = require('../models/Thesis');
-        await Thesis.updateOne(
-            { attachments: url },
-            { $inc: { downloads: 1 } }
-        );
-    } catch (err) {
-        console.error('Failed to increment download count in download proxy:', err);
+    if (noIncrement !== 'true') {
+        try {
+            const Thesis = require('../models/Thesis');
+            await Thesis.updateOne(
+                { attachments: url },
+                { $inc: { downloads: 1 } }
+            );
+            const { invalidateSearchCache } = require('../modules/cache');
+            await invalidateSearchCache();
+        } catch (err) {
+            console.error('Failed to increment download count in download proxy:', err);
+        }
     }
 
     try {
@@ -858,9 +862,9 @@ router.get('/download', async (req, res) => {
         const rawFileName = decodeURIComponent(originalUrlObj.pathname.split('/').pop() || 'document');
         const ext = rawFileName.split('.').pop().toLowerCase();
 
-        // PDF files are not supported for direct download via proxy (Cloudinary redirects them)
+        // PDF files are redirected to Cloudinary since they are not supported for direct binary streaming via proxy
         if (ext === 'pdf') {
-            return res.status(415).json({ success: false, message: 'PDF files cannot be downloaded directly. Please ask the thesis author for access.' });
+            return res.redirect(url);
         }
 
         const safeFileName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, '_');

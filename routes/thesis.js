@@ -1253,6 +1253,7 @@ router.post('/:id/download', optionalAuth, async (req, res) => {
 
         thesis.downloads = (thesis.downloads || 0) + 1;
         await thesis.save();
+        await invalidateSearchCache();
 
         res.json({ success: true, downloads: thesis.downloads });
     } catch (err) {
