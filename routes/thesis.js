@@ -583,12 +583,6 @@ router.post('/recommendations', auth, async (req, res) => {
             Strategic Research Intelligence & Recommendation Report
             Subject Query: "${targetQuery}"
             
-            Functional Requirements:
-            Provide a deep analysis of why this specific query needs refinement. Discuss the necessary academic scope, methodology, and potential contribution to the field. Explain what makes a strong thesis title in this specific area.
-            
-            Conclusion:
-            Provide a authoritative summary of how the research transitions from a general idea to a structured, institutional investigation.
-            
             Recommendations:
             1. "[Polished Thesis Title 1]"
             Rationale: Detail why this title is academically superior and its specific research focus.
@@ -599,9 +593,15 @@ router.post('/recommendations', auth, async (req, res) => {
             3. "[Polished Thesis Title 3]"
             Rationale: Detail why this title is academically superior and its specific research focus.
             
+            Functional Requirements:
+            Provide a deep analysis of why this specific query needs refinement. Discuss the necessary academic scope, methodology, and potential contribution to the field. Explain what makes a strong thesis title in this specific area.
+            
+            Conclusion:
+            Provide a authoritative summary of how the research transitions from a general idea to a structured, institutional investigation.
+            
             CRITICAL FORMATTING RULES:
             - Start EXACTLY with the header: Strategic Research Intelligence & Recommendation Report
-            - Use EXACTLY the headers: Functional Requirements:, Conclusion:, Recommendations:
+            - Use EXACTLY the headers: Recommendations:, Functional Requirements:, Conclusion:
             - DO NOT include square brackets [ ] in your sections.
             - DO NOT wrap headers in asterisks or markdown bolding.
             - Use double newlines between sections.
@@ -1227,6 +1227,37 @@ router.post('/parse-file', auth, upload.single('file'), async (req, res) => {
     } catch (err) {
         console.error('Parse file route error:', err);
         res.status(500).json({ success: false, message: 'Error parsing document file', error: err.message });
+    }
+});
+
+// @route   POST /thesis/:id/download
+// @desc    Increment the download count for a thesis
+router.post('/:id/download', optionalAuth, async (req, res) => {
+    try {
+        const thesisId = req.params.id;
+        let thesis;
+
+        // Try searching by MongoDB ObjectId first if valid
+        if (thesisId.match(/^[0-9a-fA-F]{24}$/)) {
+            thesis = await Thesis.findById(thesisId);
+        }
+
+        // If not found or not a valid ObjectId, search by custom id
+        if (!thesis) {
+            thesis = await Thesis.findOne({ id: thesisId });
+        }
+
+        if (!thesis) {
+            return res.status(404).json({ success: false, message: 'Thesis not found' });
+        }
+
+        thesis.downloads = (thesis.downloads || 0) + 1;
+        await thesis.save();
+
+        res.json({ success: true, downloads: thesis.downloads });
+    } catch (err) {
+        console.error('Error incrementing download count:', err);
+        res.status(500).json({ success: false, message: 'Server error incrementing download count', error: err.message });
     }
 });
 

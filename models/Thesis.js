@@ -73,6 +73,10 @@ const thesisSchema = new mongoose.Schema({
     },
     deleteAt: {
         type: Date
+    },
+    downloads: {
+        type: Number,
+        default: 0
     }
 }, {
     timestamps: true

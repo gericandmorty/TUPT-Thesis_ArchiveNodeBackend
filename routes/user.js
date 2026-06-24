@@ -841,6 +841,16 @@ router.get('/download', async (req, res) => {
     }
 
     try {
+        const Thesis = require('../models/Thesis');
+        await Thesis.updateOne(
+            { attachments: url },
+            { $inc: { downloads: 1 } }
+        );
+    } catch (err) {
+        console.error('Failed to increment download count in download proxy:', err);
+    }
+
+    try {
         const https = require('https');
 
         // Derive filename from the original URL
